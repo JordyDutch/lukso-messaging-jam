@@ -1,0 +1,18 @@
+# STUB manifest for the JAM message service skeleton.
+# NOTE: this does not build yet — there is no stable public JAM PVM SDK crate as
+# of 2026-10-20 (see ../../research-jam.md). Replace the (commented) dependency
+# with the real JAM service SDK once published, and target the PVM (RISC-V) build.
+[package]
+name = "jam-message-service"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# jam-pvm-sdk = "0.x"      # TODO: real JAM service SDK (refine/accumulate macros)
+# parity-scale-codec = "3" # work-package (de)serialization
+# tiny-keccak = "2"        # keccak256 for digest recomputation
+# libsecp256k1 = "0.7"     # EIP-191 ecrecover in refine()

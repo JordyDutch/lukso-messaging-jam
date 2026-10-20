@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>UP ⇄ UP Messaging — mini-app prototype</title>
+<!--
+  PROTOTYPE of the L3 client layer from docs/DESIGN.md.
+
+  Intended production vehicle: a Grid mini-app loaded via @lukso/up-provider
+  inside the UP app (which is closed-source BETA — so this standalone page is the
+  proposal, see docs/UP-APP-PROPOSAL.md).
+
+  What it demonstrates WITHOUT any node:
+    - connect a UP (real UP extension via up-provider if present; else a local
+      demo identity so the page is usable standalone),
+    - compose a DM, hash the body, derive the deterministic threadId,
+    - SIGN the message with the controller key (EIP-191 / LSP6 SIGN), verify it,
+    - produce the exact "anchor()" calldata + work package the relay consumes,
+    - exchange messages between two browser tabs via localStorage (a stand-in for
+      the on-chain anchor + JAM inbox, so you can SEE a conversation).
+
+  To wire against the real PoC contract: see the WIRING block at the bottom of
+  <script>. Shape matches poc/relay/relay.js exactly.
+-->
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 24px auto; padding: 0 16px; }
+  h1 { font-size: 1.2rem; }
+  .muted { opacity: .7; font-size: .85rem; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  input, select, button, textarea { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid #8884; }
+  button { cursor: pointer; }
+  #thread { border: 1px solid #8884; border-radius: 10px; padding: 12px; min-height: 180px; margin: 12px 0; }
+  .msg { padding: 6px 10px; border-radius: 10px; margin: 6px 0; max-width: 80%; }
+  .me { background: #3b82f633; margin-left: auto; }
+  .them { background: #8882; }
+  .meta { font-size: .7rem; opacity: .6; }
+  pre { background: #8881; padding: 10px; border-radius: 8px; overflow:auto; font-size: .72rem; }
+  code { font-size: .8rem; }
+</style>
+</head>
+<body>
+<h1>Universal Profile ⇄ Universal Profile — messaging mini-app (prototype)</h1>
+<p class="muted">L3 client for the LUKSO×JAM design. Standalone demo mode uses a local identity and
+localStorage as a stand-in for the on-chain anchor + JAM inbox. See <code>docs/DESIGN.md</code>.</p>
+
+<div class="row">
+  <button id="connect">Connect UP</button>
+  <span id="me" class="muted">not connected</span>
+</div>
+
+<div class="row" style="margin-top:12px">
+  <label>Chat with UP address:</label>
+  <input id="peer" size="44" placeholder="0x… recipient UP address" />
+</div>
+
+<div id="thread"></div>
+
+<div class="row">
+  <input id="body" size="48" placeholder="type a message…" />
+  <button id="send" disabled>Sign &amp; send</button>
+</div>
+
+<p class="muted">Last produced work package (what the relay forwards to JAM):</p>
+<pre id="wp">—</pre>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.9.0/ethers.umd.min.js"></script>
+<script>
+(async () => {
+  const $ = (id) => document.getElementById(id);
+  if (!window.ethers) { $('wp').textContent = 'ethers failed to load (offline?). The signing logic needs it.'; }
+  const E = window.ethers;
+
+  let wallet = null;     // controller signer (demo: local; prod: via up-provider)
+  let upAddress = null;  // the connected UP address
+
+  // deterministic threadId shared by both directions of a pair
+  const threadId = (a, b) => {
+    const [lo, hi] = [a.toLowerCase(), b.toLowerCase()].sort();
+    return E.solidityPackedKeccak256(['address', 'address'], [lo, hi]);
+  };
+  const digestOf = (tid, to, contentHash, nonce) =>
+    E.keccak256(E.AbiCoder.defaultAbiCoder().encode(
+      ['bytes32','address','bytes32','uint256'], [tid, to, contentHash, nonce]));
+
+  // localStorage stand-in for the anchored log + JAM inbox (so tabs can chat)
+  const store = {
+    key: (tid) => 'updm:' + tid,
+    load: (tid) => JSON.parse(localStorage.getItem(store.key(tid)) || '[]'),
+    append: (tid, m) => { const a = store.load(tid); a.push(m); localStorage.setItem(store.key(tid), JSON.stringify(a)); },
+    nonceFor: (from) => Number(localStorage.getItem('updm:nonce:' + from.toLowerCase()) || '0'),
+    bumpNonce: (from, n) => localStorage.setItem('updm:nonce:' + from.toLowerCase(), String(n + 1)),
+  };
+
+  $('connect').onclick = async () => {
+    // PROD: const provider = createUPProviderConnector() / window.lukso (up-provider);
+    //       accounts = await provider.request({ method: 'eth_requestAccounts' });
+    //       upAddress = accounts[0]; signer via BrowserProvider.
+    if (window.lukso || window.ethereum) {
+      try {
+        const bp = new E.BrowserProvider(window.lukso || window.ethereum);
+        const accts = await bp.send('eth_requestAccounts', []);
+        upAddress = accts[0];
+        wallet = await bp.getSigner();
+        $('me').textContent = 'UP (injected): ' + upAddress;
+      } catch (e) { fallback(); }
+    } else { fallback(); }
+    $('send').disabled = false;
+    render();
+    function fallback() {
+      // standalone demo identity so the page works with no extension/node
+      wallet = E.Wallet.createRandom();
+      upAddress = wallet.address;
+      $('me').textContent = 'UP (demo identity): ' + upAddress;
+    }
+  };
+
+  $('send').onclick = async () => {
+    const peer = $('peer').value.trim();
+    const text = $('body').value.trim();
+    if (!E.isAddress(peer) || !text) { alert('need a valid peer address and a message'); return; }
+    const tid = threadId(upAddress, peer);
+    const contentHash = E.keccak256(E.toUtf8Bytes(text));
+    const nonce = store.nonceFor(upAddress);
+    const digest = digestOf(tid, peer, contentHash, nonce);
+    const sig = await wallet.signMessage(E.getBytes(digest)); // EIP-191 / LSP6 SIGN
+    const recovered = E.verifyMessage(E.getBytes(digest), sig);
+    const authOk = recovered.toLowerCase() === upAddress.toLowerCase();
+
+    // calldata for MessageAnchor.anchor(threadId,to,contentHash,nonce)
+    const iface = new E.Interface(['function anchor(bytes32,address,bytes32,uint256)']);
+    const calldata = iface.encodeFunctionData('anchor', [tid, peer, contentHash, nonce]);
+
+    const wp = { kind:'jam.work_package/deliver_message', threadId: tid, from: upAddress,
+                 to: peer, contentHash, nonce, digest, sig };
+    $('wp').textContent = 'auth=' + (authOk?'OK':'FAIL') +
+      '\nanchor() calldata:\n' + calldata + '\n\nwork package:\n' + JSON.stringify(wp, null, 2);
+
+    // demo delivery: append to the shared thread (stand-in for anchor + JAM inbox)
+    store.append(tid, { from: upAddress, to: peer, text, contentHash, nonce, ts: Date.now() });
+    store.bumpNonce(upAddress, nonce);
+    $('body').value = '';
+    render();
+  };
+
+  $('peer').oninput = render;
+  window.addEventListener('storage', render); // live-update when the other tab sends
+
+  function render() {
+    const peer = $('peer').value.trim();
+    if (!upAddress || !E.isAddress(peer)) { $('thread').innerHTML = '<span class="muted">connect and enter a peer address…</span>'; return; }
+    const tid = threadId(upAddress, peer);
+    const msgs = store.load(tid);
+    $('thread').innerHTML = msgs.length ? '' : '<span class="muted">no messages yet in this thread</span>';
+    for (const m of msgs) {
+      const mine = m.from.toLowerCase() === upAddress.toLowerCase();
+      const div = document.createElement('div');
+      div.className = 'msg ' + (mine ? 'me' : 'them');
+      div.innerHTML = '<div>' + escapeHtml(m.text) + '</div>' +
+        '<div class="meta">' + (mine ? 'you' : short(m.from)) + ' · n=' + m.nonce + ' · ' + new Date(m.ts).toLocaleTimeString() + '</div>';
+      $('thread').appendChild(div);
+    }
+  }
+  const short = (a) => a.slice(0, 6) + '…' + a.slice(-4);
+  const escapeHtml = (s) => s.replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  render();
+
+  // ---- WIRING to the real PoC contract (replace the localStorage demo) ----
+  // const provider = new E.JsonRpcProvider('https://4201.rpc...'); // LUKSO testnet
+  // const anchor = new E.Contract(ANCHOR_ADDR, ANCHOR_ABI, await provider.getSigner());
+  // send:  await anchor.anchor(tid, peer, contentHash, nonce);   // (gasless via LSP25 relay)
+  // read:  anchor.queryFilter(anchor.filters.MessageAnchored(tid)) OR the JAM
+  //        service state-query RPC (see docs/RUN-JAM.md). Then resolve bodies from
+  //        IPFS by contentHash. nonce comes from anchor.nonceOf(upAddress).
+})();
+</script>
+</body>
+</html>
