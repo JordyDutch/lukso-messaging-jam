@@ -3,7 +3,10 @@
 **Pickup doc for Fabian (frozeman).** This repo is a handoff: research + an integration
 design + a **working PoC** for adding DMs between Universal Profiles, with Polkadot JAM
 as an *optional* backbone. Read this page, then `docs/FAQ.md` (your two questions,
-answered), then `docs/DESIGN.md`.
+answered), then `docs/DESIGN.md`. **If you're coming back after 2026-10-20 (evening):
+read `docs/CONTINUATION-FABIAN.md` first** — it corrects one research finding (live
+user messaging exists on the Polkadot devnet in the Product Devnet app) and adds the
+UP×.dot adapter PoC.
 
 _Date: 2026-10-20. Honesty policy: everything here is marked **verified** (from the two
 research reports or the runnable PoC) or **stub/planned**._
@@ -21,6 +24,11 @@ research reports or the runnable PoC) or **stub/planned**._
    on-chain metadata **anchor** + **IPFS** bodies + **ERC-1271/LSP6** auth + **LSP25**
    gasless + **LSP1** notifications. JAM becomes an optional, swappable layer later.
    **[verified: PoC runs end-to-end]**
+4. **(evening) Live reference exists:** the **Polkadot Product Devnet** app (PCF/Parity,
+   pre-production) already ships user DMs — X25519 E2E chat, user autocomplete,
+   CASH transfers gated to conversations. Not JAM; a PCF product on Substrate. We
+   replicated its full flow on LUKSO/UP with adapters: `poc/devnet-adapter/`.
+   **[verified: spike runs end-to-end — see `research-polkadot-messaging.md` + `docs/ADAPTERS.md`]**
 
 ## Recommended architecture (in ~10 lines)
 
@@ -44,12 +52,16 @@ ASCII diagram + full detail: `docs/DESIGN.md §2`.
 README.md                      ← you are here (the pickup doc)
 research-lukso.md              ← LUKSO/UP landscape, LSPs, official agent skill (input)
 research-jam.md                ← JAM execution model, testnet, EVM interop (input)
+research-polkadot-messaging.md ← how 2 people actually DM on devnet vs prod + CORRECTION
+                                 (Product Devnet app) — read the correction section
 docs/
   DESIGN.md                    ← full design: reqs, 3-layer arch, msg format, security,
                                  gas, options table, phased roadmap, risks, ASCII diagram
   FAQ.md                       ← B's 2 questions answered + "What this is NOT"
   RUN-JAM.md                   ← how to deploy the JAM service (verified-vs-not)
   UP-APP-PROPOSAL.md           ← feature request / PR outline for the UP app team
+  ADAPTERS.md                  ← devnet-primitive → LUKSO/UP adapter mapping + tricks
+  CONTINUATION-FABIAN.md       ← v2 addendum: correction + next steps (read first if late)
 poc/
   evm-side/                    ← WORKS: MessageAnchor.sol + compile + end-to-end EVM demo
     contracts/MessageAnchor.sol
@@ -60,6 +72,9 @@ poc/
     src/lib.rs  Cargo.toml
   up-minapp/                   ← PROTOTYPE: standalone HTML+JS chat mini-app (up-provider)
     index.html
+  devnet-adapter/              ← WORKS: UP×.dot adapters (identity/E2EE/chat) +
+    identity.js  e2ee.js  chat.js  devnet-spike.js  devnet-spike-output.txt
+                               reproduces the Product Devnet flow on LUKSO
 ```
 
 ## Run the PoC (works today)
@@ -68,6 +83,7 @@ poc/
 cd poc && npm install                 # ethers v6, solc, @ethereumjs/vm v10
 cd evm-side && node compile.js && node demo.js      # L1 anchor + auth + replay demo
 cd ../relay && node pipeline.js                      # EVM → relay → mock-JAM → inbox
+cd ../devnet-adapter && node devnet-spike.js         # devnet chat flow on LUKSO (new)
 # client prototype: open poc/up-minapp/index.html in a browser
 ```
 
@@ -88,8 +104,10 @@ cd ../relay && node pipeline.js                      # EVM → relay → mock-JA
 
 - **Verified (ran it):** contract compiles; deploys/executes on a real in-process EVM;
   EIP-191 signatures verified; replay reverts (`BadNonce`); inbox reads back; full
-  relay→mock-JAM pipeline delivers to per-recipient inboxes. Proof: `poc/*/
-  *-output.txt`.
+  relay→mock-JAM pipeline delivers to per-recipient inboxes. **New (evening):**
+  X25519+E2EE with outsider negative check; autocomplete directory; conversation-
+  gated CASH; cross-backend `threadId` match — all in `poc/devnet-adapter/`.
+  Proof: `poc/*/*-output.txt`.
 - **Stub / not executed:** `poc/jam-service` (Rust skeleton — no public JAM SDK to
   compile against yet); `docs/RUN-JAM.md` steps (not run — no JAM node installed);
   on-chain ERC-1271 enforcement (documented hook, not wired); E2E encryption (design
