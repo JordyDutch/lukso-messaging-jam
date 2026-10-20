@@ -117,3 +117,37 @@ No consumer messaging product is on the roadmap. The *mechanical* shape would be
 
 ### Bottom line for the LUKSO×JAM design
 Nothing changed the prior recommendation: **there is no user DM primitive to lean on — build a relayer + anchor-contract design and treat JAM messaging as service-to-service infrastructure, not a chat feature.** On production Polkadot, the only honest "two people write to each other on-chain right now" answer is a signed `system.remark` memo (public, DOT-fee, ~6–18s), with client-side encryption if privacy is needed.
+
+---
+
+## ⚠️ CORRECTION (2026-10-20, evening) — live user messaging DOES exist on the devnet
+
+_A user (B) was using the **Polkadot Product Devnet app** (mobile + desktop, PCF/Parity) and reported: real DM chat between users with autocomplete user search, plus a **CASH** testnet token top-up from a faucet, with the app-level rule "you cannot send CASH until you start a conversation." This directly refines the earlier "no user messaging" conclusion. Sources: Polkadot Community Foundation forum posts (primary, fetched 2026-10-20)._
+
+### What the app is
+- **Polkadot Product Devnet** = Polkadot's official **pre-production** consumer network + app (X @Polkadot: "The Polkadot Devnet is our pre-production network, open to…"; polkadot.com tagline: "We're building the social layer for this different kind of internet. How you prove you're real without revealing who you are…").
+- Apps: Android (Firebase App Distribution / APK), iOS (TestFlight), desktop (github.com/Polkadot-Community-Foundation/polkadot-desktop-community). Community: matrix `#polkadot-products-public:matrix.org`.
+- It is a **product on the current Substrate/Polkadot stack** (Bulletin chain, CDM contract registry, Asset Hub, People) — **not** a JAM service. JAM is the separate, later transition.
+- Real traffic: Chainspect reported Polkadot activity +150% linked to Product Devnet traffic (~4,960 tx in one hour, Sept 2026). The building team reportedly passed W3F **M1 interviews** (Oct 2026, via PolkadotDevs).
+
+### How the messaging works (from PCF forum, verified)
+- **Architecture = "host + primitives"** (dev feedback, forum t/18244): the app wraps everything so users don't touch deployment; the docs describe **primitives: `cash`, `messaging`, `identity`**. This is exactly the "messaging is app logic layered on chain primitives" model — consistent with research-jam.md, now with a shipped example.
+- **Identity**: cryptographic "personhood pseudonyms" (pseudonym has a cryptographic context; updated in the Sept 2026 release). User discovery = the app's directory: typing a prefix (a, b, …) suggests matching users → **that is the autocomplete B saw** (client-side search over the registered pseudonym/.dot directory, e.g. DotNS `.dot` names).
+- **Chat**: end-to-end style encryption with **X25519 key exchange** (upgraded from P-256 in the Sept 9 2026 release), chat search, multimedia, reply-to-transfer inside chat.
+- **Data layer**: **Bulletin chain** stores app data (ephemeral posts, content; CIDs in contracts as pointers); apps have **storage allowances** (PGAS) — running out blocks you.
+- **CASH / "coinage"**: a devnet test token, top-up via faucet ("Coinage management improvements (durability layer)" in the Sept 2026 release notes).
+- **Why "can't send CASH until you start a conversation"**: transfers are **only allowed inside an existing conversation thread** ("Reply to a transfer inside chat" is an explicit feature). On-chain it's just a normal token transfer — the conversation requirement is an **app-level UX rule** (transfer attached to a chat thread/contact), not a protocol constraint. Flow: search user (autocomplete) → open chat → send a message (conversation exists) → send CASH inside that chat.
+- **Caveat**: "It's a testnet; expect chaos!" — the Sept 2026 update required new usernames and **wiped contacts/messages** for all users.
+
+### Comparison with prior findings — updated
+| Prior finding | Now | Verdict |
+|---|---|---|
+| "No end-user messaging/DM/chat dapp on JAM/devnet found" | True for **JAM** (no JAM-based chat app; community still on Matrix) — but **FALSE for Polkadot devnet generally**: the official Product Devnet app ships working user DMs + payments today | **CONTRADICTS (extended)** — the negative finding was search-limited (provider down) |
+| "Production today: only `system.remark` memo" | Still true for **mainnet** — Product Devnet is pre-production, not on Polkadot mainnet | CONFIRMS (scope clarified) |
+| "Offchain Messaging = service-to-service" | Unchanged; the Product Devnet chat is a PCF app product on Substrate, independent of the Offchain Messaging workstream | CONFIRMS (now with a named counter-example that is NOT JAM-based) |
+| "Grill.chat defunct" | Unchanged; the live consumer chat is now the **Product Devnet app** | EXTENDS |
+
+### Bottom line (updated)
+- **Devnet, today:** two people CAN DM each other — via the official Polkadot Product Devnet app (X25519-encrypted chat, pseudonyms, user autocomplete, CASH faucet token, transfers tied to conversations).
+- **Production (mainnet), today:** still no user messaging product; `system.remark` remains the only honest on-chain write path. The Product Devnet is the strongest signal that a consumer messaging product is coming to mainnet (M1 passed, 150% activity spike), but it is not on mainnet yet.
+- **For the LUKSO×JAM design:** this is the best available **reference architecture** for what "decentralized user messaging" looks like in practice (identity primitive + E2EE messaging primitive + cash primitive + directory search + storage layer), built as an app over chain primitives rather than as a protocol primitive. It validates the relayer+anchor-contract approach and shows the UX bar (autocomplete, encrypted DMs, in-chat payments).
