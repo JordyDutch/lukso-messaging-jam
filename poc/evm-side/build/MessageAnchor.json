@@ -1,0 +1,191 @@
+{
+  "abi": [
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "expected",
+          "type": "uint256"
+        },
+        {
+          "internalType": "uint256",
+          "name": "got",
+          "type": "uint256"
+        }
+      ],
+      "name": "BadNonce",
+      "type": "error"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "bytes32",
+          "name": "threadId",
+          "type": "bytes32"
+        },
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "from",
+          "type": "address"
+        },
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "to",
+          "type": "address"
+        },
+        {
+          "indexed": false,
+          "internalType": "bytes32",
+          "name": "contentHash",
+          "type": "bytes32"
+        },
+        {
+          "indexed": false,
+          "internalType": "uint64",
+          "name": "timestamp",
+          "type": "uint64"
+        },
+        {
+          "indexed": false,
+          "internalType": "uint256",
+          "name": "nonce",
+          "type": "uint256"
+        }
+      ],
+      "name": "MessageAnchored",
+      "type": "event"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "bytes32",
+          "name": "threadId",
+          "type": "bytes32"
+        },
+        {
+          "internalType": "address",
+          "name": "to",
+          "type": "address"
+        },
+        {
+          "internalType": "bytes32",
+          "name": "contentHash",
+          "type": "bytes32"
+        },
+        {
+          "internalType": "uint256",
+          "name": "expectedNonce",
+          "type": "uint256"
+        }
+      ],
+      "name": "anchor",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "bytes32",
+          "name": "threadId",
+          "type": "bytes32"
+        },
+        {
+          "internalType": "address",
+          "name": "recipient",
+          "type": "address"
+        },
+        {
+          "internalType": "uint256",
+          "name": "index",
+          "type": "uint256"
+        }
+      ],
+      "name": "getMessage",
+      "outputs": [
+        {
+          "components": [
+            {
+              "internalType": "address",
+              "name": "from",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "to",
+              "type": "address"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "contentHash",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "uint64",
+              "name": "timestamp",
+              "type": "uint64"
+            },
+            {
+              "internalType": "uint256",
+              "name": "nonce",
+              "type": "uint256"
+            }
+          ],
+          "internalType": "struct MessageAnchor.Anchor",
+          "name": "",
+          "type": "tuple"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "bytes32",
+          "name": "threadId",
+          "type": "bytes32"
+        },
+        {
+          "internalType": "address",
+          "name": "recipient",
+          "type": "address"
+        }
+      ],
+      "name": "inboxCount",
+      "outputs": [
+        {
+          "internalType": "uint256",
+          "name": "",
+          "type": "uint256"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "",
+          "type": "address"
+        }
+      ],
+      "name": "nonceOf",
+      "outputs": [
+        {
+          "internalType": "uint256",
+          "name": "",
+          "type": "uint256"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    }
+  ],
+  "bytecode": "0x6080604052348015600f57600080fd5b506104c58061001f6000396000f3fe608060405234801561001057600080fd5b506004361061004c5760003560e01c80632acd107414610051578063669e18f41461007757806388e3aa901461008c578063ed2a2d64146100f4575b600080fd5b61006461005f366004610399565b610114565b6040519081526020015b60405180910390f35b61008a6100853660046103c5565b61013c565b005b61009f61009a366004610400565b6102bb565b60405161006e919081516001600160a01b039081168252602080840151909116908201526040808301519082015260608083015167ffffffffffffffff16908201526080918201519181019190915260a00190565b610064610102366004610436565b60016020526000908152604090205481565b6000828152602081815260408083206001600160a01b03851684529091529020545b92915050565b3360009081526001602052604090205481811461017a57604051633ddd513160e01b8152600481018290526024810183905260440160405180910390fd5b610185816001610458565b336000818152600160208181526040808420959095558983528281528483206001600160a01b038a8116808652918352868520875160a081018952878152808501848152818a018d815267ffffffffffffffff4281811660608601908152608086018f81528754808d018955978d5299909b209451600590960290940180549587166001600160a01b0319968716178155925198830180549990961698909416979097179093559451600283015594516003820180549190961667ffffffffffffffff199091161790945590516004909301929092559251909288917fbc74b529bfc7c5f9deb30d5324190f78c1c3769c5d670fafa67f75bfbf8320d4916102ac91899190889092835267ffffffffffffffff919091166020830152604082015260600190565b60405180910390a45050505050565b6040805160a0810182526000808252602080830182905282840182905260608301829052608083018290528682528181528382206001600160a01b038716835290529190912080548390811061031357610313610479565b60009182526020918290206040805160a081018252600590930290910180546001600160a01b03908116845260018201541693830193909352600283015490820152600382015467ffffffffffffffff166060820152600490910154608082015290509392505050565b80356001600160a01b038116811461039457600080fd5b919050565b600080604083850312156103ac57600080fd5b823591506103bc6020840161037d565b90509250929050565b600080600080608085870312156103db57600080fd5b843593506103eb6020860161037d565b93969395505050506040820135916060013590565b60008060006060848603121561041557600080fd5b833592506104256020850161037d565b929592945050506040919091013590565b60006020828403121561044857600080fd5b6104518261037d565b9392505050565b8082018082111561013657634e487b7160e01b600052601160045260246000fd5b634e487b7160e01b600052603260045260246000fdfea26469706673582212200aa4f87f094eaa2e973ff7aafc4587340043d9cc57717a41bac69e1169e7afce64736f6c63430008250033"
+}

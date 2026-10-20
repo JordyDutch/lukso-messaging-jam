@@ -1,0 +1,34 @@
+LUKSO (local) MessageAnchor @ 0xae519fc2ba8e6ffe6473195c092bf1bae986ff90
+UPs: Alice=0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A  Bob=0x1563915e194D8CfBA1943570603F7606A3115508  Carol=0x5CbDd86a2FA8Dc4bDdd8a8f69dBa48572EeC07FB 
+
+--- clients anchor messages on LUKSO ---
+anchor Alice->Bob n=0 ok  "gm Bob (via JAM relay)"
+anchor Carol->Bob n=0 ok  "Bob, Carol here"
+anchor Alice->Bob n=1 ok  "second to Bob"
+anchor Bob->Alice n=0 ok  "reply to Alice"
+
+--- relay polls LUKSO and forwards to the JAM service ---
+[relay] work package -> {"from":"0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A","to":"0x1563915e194D8CfBA1943570603F7606A3115508","nonce":0}
+  [jam.accumulate] inbox += 1
+[relay] work package -> {"from":"0x5CbDd86a2FA8Dc4bDdd8a8f69dBa48572EeC07FB","to":"0x1563915e194D8CfBA1943570603F7606A3115508","nonce":0}
+  [jam.accumulate] inbox += 1
+[relay] work package -> {"from":"0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A","to":"0x1563915e194D8CfBA1943570603F7606A3115508","nonce":1}
+  [jam.accumulate] inbox += 1
+[relay] work package -> {"from":"0x1563915e194D8CfBA1943570603F7606A3115508","to":"0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A","nonce":0}
+  [jam.accumulate] inbox += 1
+
+relay forwarded 4 work packages into the JAM service
+
+--- relay double-poll (cursor advanced; nothing new) ---
+forwarded on second poll: 0
+
+--- JAM service inboxes (what the UP mini-app would read) ---
+Alice (0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A): 1 message(s)
+   from=0x1563915e194D8CfBA1943570603F7606A3115508 n=0 hash=0xd2e1d6e1962e17ec…
+Bob (0x1563915e194D8CfBA1943570603F7606A3115508): 3 message(s)
+   from=0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A n=0 hash=0xe8d171e606da90c0…
+   from=0x5CbDd86a2FA8Dc4bDdd8a8f69dBa48572EeC07FB n=0 hash=0x28792fd0ac6f4b47…
+   from=0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A n=1 hash=0x3a4e56e0d6aba8b6…
+Carol (0x5CbDd86a2FA8Dc4bDdd8a8f69dBa48572EeC07FB): 0 message(s)
+
+PIPELINE OK: EVM anchor -> relay -> JAM refine/accumulate -> inbox.

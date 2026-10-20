@@ -1,0 +1,75 @@
+UP Alice = 0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A
+UP Bob   = 0x1563915e194D8CfBA1943570603F7606A3115508
+UP Carol = 0x5CbDd86a2FA8Dc4bDdd8a8f69dBa48572EeC07FB
+
+MessageAnchor deployed at 0xae519fc2ba8e6ffe6473195c092bf1bae986ff90 
+
+--- sending DMs ---
+DM Alice->Bob n=0 auth=OK anchored=yes body="gm Bob, this is anchored on LUKSO"
+DM Bob->Alice n=0 auth=OK anchored=yes body="gm Alice, got it — reply anchored too"
+DM Alice->Carol n=1 auth=OK anchored=yes body="hi Carol, separate thread"
+DM Alice->Bob n=2 auth=OK anchored=yes body="second message to Bob"
+
+--- replay-protection check (expect REVERT) ---
+DM Alice->Bob n=0 auth=OK anchored=REVERTED body="REPLAYED old nonce"
+replay reverted: true (BadNonce expected=3 got=0)
+
+--- Bob inbox (Alice<->Bob thread) ---
+message count: 2
+  [0] from=0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A ts=0 nonce=0 contentHash=0x9108ad95e053c5bc1a79dc5927fa870c1a58ddaed05f7c19f2433b275b047070
+  [1] from=0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A ts=0 nonce=2 contentHash=0x52fb0d042d9ddcc7d0ee79ecad4d4bb84de2b841e1524180a925a2f4b7e3a032
+
+--- events emitted (from a single anchor tx) ---
+DM Carol->Bob n=0 auth=OK anchored=yes body="event decode sample"
+  MessageAnchored {
+  threadId: '0x0c9873ec92b8019122d3103eabf39771c5d84a12926f0c78d725555eb9e46df2',
+  from: '0x5CbDd86a2FA8Dc4bDdd8a8f69dBa48572EeC07FB',
+  to: '0x1563915e194D8CfBA1943570603F7606A3115508',
+  nonce: '0'
+}
+
+--- work packages the relayer would emit to the JAM layer ---
+[
+  {
+    "threadId": "0x015e573969176b9722387322f7a86438b99dced2364fbf3be629385d3d6de9c3",
+    "from": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+    "to": "0x1563915e194D8CfBA1943570603F7606A3115508",
+    "contentHash": "0x9108ad95e053c5bc1a79dc5927fa870c1a58ddaed05f7c19f2433b275b047070",
+    "nonce": 0,
+    "sig": "0x862adf50659307b6432f804177e6bed2a69dc90429bbd0e296833935b56e2b5f462098bbaab942fe0216ccd1ebb327ce2aa8d7c30df86876e6568b08b6410ea81b"
+  },
+  {
+    "threadId": "0x015e573969176b9722387322f7a86438b99dced2364fbf3be629385d3d6de9c3",
+    "from": "0x1563915e194D8CfBA1943570603F7606A3115508",
+    "to": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+    "contentHash": "0xec770788f1c4e0ed4591345ac62d9b2b84cd8b5b06942d4790afd1768e6565a4",
+    "nonce": 0,
+    "sig": "0xb8f59e2cb74220767393da7e617b3275a7ce476d3ece42e2c3f830a3ea16e9c70d81c8c84688d026d8a0edf877cddcffb1a7a893b4ff374ce3f1e2947b0761861c"
+  },
+  {
+    "threadId": "0xb90333b47cadf84a5477b6bad12dba4c5cb11b0a54eea563ce938f648a7ef774",
+    "from": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+    "to": "0x5CbDd86a2FA8Dc4bDdd8a8f69dBa48572EeC07FB",
+    "contentHash": "0xa52751b9dca51df5d00039957f54f997836959322993503595f4b2c5bf2ca40a",
+    "nonce": 1,
+    "sig": "0x1df902f8939ae21398a52e714257877fa50a53dadb2829323397da018dd1130c21f96acd8b47f163ece51d0b5e3c46ba92a12619d3deb41c3a29c3ff1621c1331b"
+  },
+  {
+    "threadId": "0x015e573969176b9722387322f7a86438b99dced2364fbf3be629385d3d6de9c3",
+    "from": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+    "to": "0x1563915e194D8CfBA1943570603F7606A3115508",
+    "contentHash": "0x52fb0d042d9ddcc7d0ee79ecad4d4bb84de2b841e1524180a925a2f4b7e3a032",
+    "nonce": 2,
+    "sig": "0x011872db544970176c16b87862132c4784ff9f6390269641ef3d80fd6ac30405692755cbf98925d97c43028e22556975578edae3be185dec47ce853849771dec1c"
+  },
+  {
+    "threadId": "0x0c9873ec92b8019122d3103eabf39771c5d84a12926f0c78d725555eb9e46df2",
+    "from": "0x5CbDd86a2FA8Dc4bDdd8a8f69dBa48572EeC07FB",
+    "to": "0x1563915e194D8CfBA1943570603F7606A3115508",
+    "contentHash": "0x200eabe09aaa786618a656d131fd5648c5c062396608bb02d6e98f789bab2464",
+    "nonce": 0,
+    "sig": "0x1e8a7358f916bb5d86e07d77054ddf2e8a72fe65cc3928e38379845d059316e24fbfe368885370eac062a3a595c3c3967682a8911860faa895e88b7233a5c9c91b"
+  }
+]
+
+DEMO OK: real EVM, signatures verified, replay reverted, inbox read back.
