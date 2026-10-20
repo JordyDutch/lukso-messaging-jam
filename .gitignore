@@ -1,0 +1,7 @@
+node_modules/
+poc/node_modules/
+*.log
+.DS_Store
+npm-debug.log*
+# keep build/MessageAnchor.json (small, useful artifact) — do NOT ignore build/
+/tmp/
