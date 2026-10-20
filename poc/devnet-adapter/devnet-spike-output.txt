@@ -1,0 +1,42 @@
+
+--- 0. identities (pseudonym + .dot + UP address) ---
+  Alice: alice / alice.dot / 0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A
+  Bob: bob / bob.dot / 0x1563915e194D8CfBA1943570603F7606A3115508
+  Carol: carol / carol.dot / 0x5CbDd86a2FA8Dc4bDdd8a8f69dBa48572EeC07FB
+
+--- 1. faucet top-up ---
+  Bob CASH balance: 100
+
+--- 2. user search "a" (autocomplete) ---
+  alice (pseudonym) -> 0x19E7E376…
+
+--- 4. B tries CASH before chatting ---
+  CASH transfer rejected: start a conversation first (no existing thread)
+
+--- 5. conversation opened + first message (E2EE) ---
+  threadId = 0x015e573969176b9722387322f7a86438b99dced2364fbf3be629385d3d6de9c3
+  Bulletin store holds CIPHERTEXT only: {"threadId":"0x015e573969176b97…","from":"0x156391…","to":"0x19E7E3…","ciphertextBytes":8}
+
+--- 6. CASH sent inside the conversation ---
+  transfer 10 CASH, threadId 0x015e573969176b97…
+  balances: B=90  A=10
+
+--- 7. anchoring on LUKSO (same threadIds as the Bulletin store) ---
+  anchor Bob->Alice n=0 ok  (thread 0x015e573969176b97…)
+  anchor Alice->Bob n=0 ok  (thread 0x015e573969176b97…)
+[relay] work package -> {"from":"0x1563915e194D8CfBA1943570603F7606A3115508","to":"0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A","nonce":0}
+  [jam.accumulate] inbox += 1
+[relay] work package -> {"from":"0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A","to":"0x1563915e194D8CfBA1943570603F7606A3115508","nonce":0}
+  [jam.accumulate] inbox += 1
+  relay forwarded 2 work packages to the (mock) JAM service
+
+--- 8. one conversation, two backends, one threadId ---
+  app threadId:        0x015e573969176b9722387322f7a86438b99dced2364fbf3be629385d3d6de9c3
+  LUKSO anchor event:  0x015e573969176b9722387322f7a86438b99dced2364fbf3be629385d3d6de9c3  MATCH ✓
+  A's decrypted inbox (app side):
+     0x156391…: "gm alice! (E2EE)"
+
+--- 9. E2EE negative check ---
+  Carol (outsider) GCM-auth fails — cannot read ✓
+
+SPIKE OK: devnet flow reproduced on LUKSO/UP with adapters; threadIds match across backends.
