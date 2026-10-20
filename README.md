@@ -62,6 +62,8 @@ docs/
   UP-APP-PROPOSAL.md           ← feature request / PR outline for the UP app team
   ADAPTERS.md                  ← devnet-primitive → LUKSO/UP adapter mapping + tricks
   CONTINUATION-FABIAN.md       ← v2 addendum: correction + next steps (read first if late)
+  MAINNET-FLOW.md              ← v3: LUKSO mainnet flow — what to deploy, where to connect
+  diagrams/mainnet-sequence.html ← sequence diagram (open in a browser)
 poc/
   evm-side/                    ← WORKS: MessageAnchor.sol + compile + end-to-end EVM demo
     contracts/MessageAnchor.sol

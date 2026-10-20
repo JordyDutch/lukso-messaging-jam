@@ -1,0 +1,164 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>UP × UP messaging on LUKSO mainnet — sequence</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f8fafc;
+    --fg: #172033;
+    --muted: #5b6475;
+    --line: #64748b;
+    --neutral: #e2e8f0;
+    --input: #bfdbfe;
+    --process: #c7d2fe;
+    --storage: #99f6e4;
+    --external: #fde68a;
+    --risk: #fecaca;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f172a;
+      --fg: #e5e7eb;
+      --muted: #a3adbd;
+      --line: #94a3b8;
+      --neutral: #334155;
+      --input: #1d4ed8;
+      --process: #4338ca;
+      --storage: #0f766e;
+      --external: #92400e;
+      --risk: #991b1b;
+    }
+  }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1200px; margin: 32px auto; padding: 0 20px; }
+  svg { width: 100%; height: auto; display: block; }
+  .title { font-size: 20px; font-weight: 650; fill: var(--fg); }
+  .sub { font-size: 12px; fill: var(--muted); }
+  .label { font-size: 13px; font-weight: 600; fill: var(--fg); }
+  .small { font-size: 11px; fill: var(--muted); }
+  .msg { font-size: 12px; fill: var(--fg); }
+  .n { font-size: 11px; font-weight: 700; fill: var(--muted); }
+  .zone-lbl { font-size: 11px; font-weight: 700; fill: var(--muted); }
+  .node { stroke: var(--line); stroke-width: 1; }
+  .neutral { fill: var(--neutral); }
+  .input { fill: var(--input); }
+  .process { fill: var(--process); }
+  .storage { fill: var(--storage); }
+  .external { fill: var(--external); }
+  .edge { stroke: var(--line); stroke-width: 1.5; fill: none; }
+  .life { stroke: var(--line); stroke-width: 1; stroke-dasharray: 4 4; opacity: .7; }
+  .zone { fill: none; stroke: var(--line); stroke-width: 1; stroke-dasharray: 6 5; opacity: .5; }
+</style>
+<main>
+  <svg viewBox="0 0 1200 950" role="img" aria-label="Sequence diagram: UP to UP messaging on LUKSO mainnet">
+    <defs>
+      <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)" />
+      </marker>
+    </defs>
+
+    <text x="600" y="30" text-anchor="middle" class="title">UP × UP messaging on LUKSO mainnet — send sequence</text>
+    <text x="600" y="50" text-anchor="middle" class="sub">gasless via LSP25 · E2E via X25519 · bodies on IPFS · metadata anchored on-chain (nonce-ordered) · (Phase 2: JAM behind the relay)</text>
+
+    <!-- zones (behind everything) -->
+    <rect x="495" y="92" width="180" height="742" class="zone" />
+    <text x="585" y="110" text-anchor="middle" class="zone-lbl">trustless (on-chain)</text>
+    <rect x="665" y="92" width="170" height="742" class="zone" />
+    <text x="750" y="110" text-anchor="middle" class="zone-lbl">our relay (liveness only — cannot forge: sig re-verified)</text>
+
+    <!-- lifelines -->
+    <line x1="90"   y1="140" x2="90"   y2="834" class="life" />
+    <line x1="255"  y1="140" x2="255"  y2="834" class="life" />
+    <line x1="420"  y1="140" x2="420"  y2="834" class="life" />
+    <line x1="585"  y1="140" x2="585"  y2="834" class="life" />
+    <line x1="750"  y1="140" x2="750"  y2="834" class="life" />
+    <line x1="915"  y1="140" x2="915"  y2="834" class="life" />
+    <line x1="1080" y1="140" x2="1080" y2="834" class="life" />
+
+    <!-- header boxes -->
+    <rect x="20"   y="88" width="140" height="52" rx="8" class="node input" />
+    <text x="90" y="109" text-anchor="middle" class="label">Alice</text>
+    <text x="90" y="126" text-anchor="middle" class="small">UP app (client)</text>
+    <rect x="185" y="88" width="140" height="52" rx="8" class="node process" />
+    <text x="255" y="109" text-anchor="middle" class="label">Alice's UP</text>
+    <text x="255" y="126" text-anchor="middle" class="small">LSP0 + LSP6 KeyMgr</text>
+    <rect x="350" y="88" width="140" height="52" rx="8" class="node process" />
+    <text x="420" y="109" text-anchor="middle" class="label">LUKSO relay</text>
+    <text x="420" y="126" text-anchor="middle" class="small">LSP25 gasless</text>
+    <rect x="510" y="88" width="150" height="52" rx="8" class="node storage" />
+    <text x="585" y="109" text-anchor="middle" class="label">LUKSO mainnet</text>
+    <text x="585" y="126" text-anchor="middle" class="small">MessageAnchor (chain 42)</text>
+    <rect x="680" y="88" width="140" height="52" rx="8" class="node external" />
+    <text x="750" y="109" text-anchor="middle" class="label">our relay</text>
+    <text x="750" y="126" text-anchor="middle" class="small">watcher → inbox</text>
+    <rect x="845" y="88" width="140" height="52" rx="8" class="node input" />
+    <text x="915" y="109" text-anchor="middle" class="label">Bob</text>
+    <text x="915" y="126" text-anchor="middle" class="small">UP app (client)</text>
+    <rect x="1010" y="88" width="140" height="52" rx="8" class="node external" />
+    <text x="1080" y="109" text-anchor="middle" class="label">IPFS</text>
+    <text x="1080" y="126" text-anchor="middle" class="small">pinned bodies</text>
+
+    <!-- step notes (self actions) -->
+    <rect x="15" y="150" width="150" height="40" rx="6" class="node neutral" />
+    <text x="90" y="167" text-anchor="middle" class="msg">1. search "bob" → autocomplete</text>
+    <text x="90" y="182" text-anchor="middle" class="small">(local ENS / .dot index)</text>
+
+    <rect x="15" y="204" width="150" height="40" rx="6" class="node neutral" />
+    <text x="90" y="221" text-anchor="middle" class="msg">2. open thread</text>
+    <text x="90" y="236" text-anchor="middle" class="small">threadId = keccak(sorted(A,B))</text>
+
+    <!-- arrows -->
+    <line x1="90" y1="272" x2="1074" y2="272" class="edge" marker-end="url(#arrow)" />
+    <text x="90" y="265" class="n">3</text>
+    <text x="585" y="265" text-anchor="middle" class="msg">upload E2E ciphertext (X25519) → contentHash</text>
+
+    <line x1="90" y1="316" x2="249" y2="316" class="edge" marker-end="url(#arrow)" />
+    <text x="90" y="309" class="n">4</text>
+    <text x="169" y="309" text-anchor="middle" class="msg">sign digest</text>
+    <text x="169" y="331" text-anchor="middle" class="small">LSP6 SIGN / EIP-191 v0</text>
+
+    <line x1="255" y1="362" x2="414" y2="362" class="edge" marker-end="url(#arrow)" />
+    <text x="255" y="355" class="n">5</text>
+    <text x="334" y="355" text-anchor="middle" class="msg">executeRelayCall(anchor(…))</text>
+
+    <line x1="420" y1="406" x2="579" y2="406" class="edge" marker-end="url(#arrow)" />
+    <text x="420" y="399" class="n">6</text>
+    <text x="500" y="399" text-anchor="middle" class="msg">tx: anchor(tid, bob, hash, nonce)</text>
+    <text x="500" y="421" text-anchor="middle" class="small">gasless — monthly LYX quota per UP</text>
+
+    <rect x="510" y="446" width="150" height="40" rx="6" class="node neutral" />
+    <text x="585" y="463" text-anchor="middle" class="msg">7. nonce check, append inbox</text>
+    <text x="585" y="478" text-anchor="middle" class="small">emit MessageAnchored</text>
+
+    <line x1="585" y1="512" x2="744" y2="512" class="edge" marker-end="url(#arrow)" />
+    <text x="585" y="505" class="n">8</text>
+    <text x="664" y="505" text-anchor="middle" class="msg">eth_getLogs → work package</text>
+
+    <rect x="675" y="538" width="150" height="40" rx="6" class="node neutral" />
+    <text x="750" y="555" text-anchor="middle" class="msg">9. verify ERC-1271 sig → inbox</text>
+    <text x="750" y="570" text-anchor="middle" class="small">(Phase 2: JAM refine/accumulate)</text>
+
+    <line x1="750" y1="606" x2="909" y2="606" class="edge" marker-end="url(#arrow)" />
+    <text x="750" y="599" class="n">10</text>
+    <text x="830" y="599" text-anchor="middle" class="msg">notify Bob (poll / LSP1 URD)</text>
+
+    <line x1="915" y1="650" x2="1074" y2="650" class="edge" marker-end="url(#arrow)" />
+    <text x="915" y="643" class="n">11</text>
+    <text x="995" y="643" text-anchor="middle" class="msg">fetch ciphertext by hash</text>
+
+    <rect x="840" y="676" width="150" height="40" rx="6" class="node neutral" />
+    <text x="915" y="693" text-anchor="middle" class="msg">12. decrypt with conv. key</text>
+    <text x="915" y="708" text-anchor="middle" class="small">render DM (X25519 + AES-GCM)</text>
+
+    <rect x="15" y="742" width="150" height="40" rx="6" class="node neutral" />
+    <text x="90" y="759" text-anchor="middle" class="msg">13. CASH: gate = thread exists</text>
+    <text x="90" y="774" text-anchor="middle" class="small">→ LSP25 ERC-20 transfer (in-chat)</text>
+
+    <!-- footer -->
+    <text x="600" y="878" text-anchor="middle" class="small">chain 42 · RPC 42.rpc.thirdweb.com · gasless relayer.mainnet.lukso.network/api (LSP25) · explorer.lukso.network · CASH = ERC-20 (v1: app-side gate; trustless gate optional)</text>
+    <text x="600" y="898" text-anchor="middle" class="small">trust note: on-chain anchor is replay-safe (per-sender nonce); relay cannot forge messages — it forwards the controller's EIP-191 sig which is re-verified off-chain (and by JAM refine in Phase 2)</text>
+    <text x="600" y="918" text-anchor="middle" class="small">PoC proof: poc/devnet-adapter/devnet-spike-output.txt (threadId MATCH across app store + LUKSO anchor) · details: docs/MAINNET-FLOW.md</text>
+  </svg>
+</main>
