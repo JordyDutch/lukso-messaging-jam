@@ -1,0 +1,7 @@
+{
+  "board": "0x2b2d16E6de0e66072be59BE40a19E4c4CF37f918",
+  "aliceToBobPost": "0xc9bbc031f11b680113b900655ffbdc28983f8f63a6c02fc180ea22e4618db122",
+  "aliceToBobPing": "0x2d8a4cad33bbf046f4d509094c5bf98ee25279cc6e014c4cad2a928bd21ad0ff",
+  "bobToAlicePost": "0x2db066a37d882066a6d91fc00d4ced5c2e4505b3fb16a769a8bdc1e0feb9dd52",
+  "bobToAlicePing": "0x08a149be4f2b6772a5bec0bf8b7755336305bd41dc55d0ec3e86aaaa618d9e36"
+}
