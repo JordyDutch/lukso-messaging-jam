@@ -17,6 +17,7 @@ import {
 import { convPubOf } from '../lib/registry';
 import { threadIdFor } from '../lib/crypto';
 import { resolveName, nameOf, type ProfileHit } from '../lib/names';
+import { watchRoster, type RosterEntry } from '../lib/roster';
 import { EXPLORER, KNOWN_PEERS } from '../lib/config';
 import { ethers } from 'ethers';
 import {
@@ -27,7 +28,11 @@ import {
   type P2pStatus,
 } from '../lib/p2p';
 
-type Tab = { kind: 'public' } | { kind: 'mentions' } | { kind: 'dm'; name: string; address: string };
+type Tab =
+  | { kind: 'public' }
+  | { kind: 'mentions' }
+  | { kind: 'people' }
+  | { kind: 'dm'; name: string; address: string };
 
 const ZERO = '0x0000000000000000000000000000000000000000';
 
@@ -68,11 +73,19 @@ export function Wall() {
   const [decoded, setDecoded] = useState<WallPost[]>([]);
   const [tab, setTab] = useState<Tab>({ kind: 'public' });
   const [peerAnnounced, setPeerAnnounced] = useState<Record<string, boolean>>({});
+  const [roster, setRoster] = useState<RosterEntry[]>([]);
 
   // subscribe to the whole wall once
   useEffect(() => {
     let off: (() => void) | undefined;
     watchWall(setRaw).then((unsub) => (off = unsub)).catch(() => {});
+    return () => off?.();
+  }, []);
+
+  // subscribe to the announced-UP directory (ConvPubAnnounced) once
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    watchRoster(setRoster).then((unsub) => (off = unsub)).catch(() => {});
     return () => off?.();
   }, []);
 
@@ -152,6 +165,13 @@ export function Wall() {
             @ Mentions
             {mentions.length > 0 && <span className="badge">{mentions.length}</span>}
           </button>
+          <button
+            className={tab.kind === 'people' ? 'tab active' : 'tab'}
+            onClick={() => setTab({ kind: 'people' })}
+          >
+            🌐 Discover
+            {roster.length > 0 && <span className="badge">{roster.length}</span>}
+          </button>
           {KNOWN_PEERS.map((p) => (
             <button
               key={p.address}
@@ -169,6 +189,12 @@ export function Wall() {
           <PublicPane me={meLc} up={up} feed={publicFeed} />
         ) : tab.kind === 'mentions' ? (
           <MentionsPane me={meLc} feed={mentions} />
+        ) : tab.kind === 'people' ? (
+          <DiscoverPane
+            me={meLc}
+            roster={roster}
+            openDm={(name, address) => setTab({ kind: 'dm', name, address })}
+          />
         ) : (
           <DmPane
             up={up}
@@ -318,6 +344,146 @@ function MentionsPane({ me, feed }: { me: string; feed: WallPost[] }) {
         ))}
       </ul>
     </>
+  );
+}
+
+/**
+ * DiscoverPane — the public directory of UPs that have announced a conversation
+ * key (RegistryV3 ConvPubAnnounced). Anyone here is reachable for an encrypted
+ * DM / off-chain channel. Name is shown prominently; the UP address and the
+ * announced convPub are shown but secondary. Includes a free-text @name/address
+ * search so you can jump to anyone, announced or not.
+ */
+function DiscoverPane({
+  me,
+  roster,
+  openDm,
+}: {
+  me: string;
+  roster: RosterEntry[];
+  openDm: (name: string, address: string) => void;
+}) {
+  const [q, setQ] = useState('');
+  const [hits, setHits] = useState<ProfileHit[]>([]);
+  const [searching, setSearching] = useState(false);
+  const deb = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function onSearch(v: string) {
+    setQ(v);
+    if (deb.current) clearTimeout(deb.current);
+    if (!v.trim()) return setHits([]);
+    if (/^0x[0-9a-fA-F]{40}$/.test(v.trim())) {
+      setHits([{ address: v.trim(), name: null, avatar: null }]);
+      return;
+    }
+    setSearching(true);
+    deb.current = setTimeout(async () => {
+      try {
+        setHits(await resolveName(v));
+      } catch {
+        setHits([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 300);
+  }
+
+  // Hide yourself from the announced directory.
+  const others = roster.filter((r) => r.address.toLowerCase() !== me);
+
+  return (
+    <>
+      <div className="composer">
+        <div className="small muted">
+          🌐 Discover — Universal Profiles that announced an encryption key. Anyone
+          listed can receive an encrypted DM and an off-chain channel. {others.length} announced.
+        </div>
+        <input
+          className="input"
+          placeholder="Search any @name or paste a 0x UP address…"
+          value={q}
+          onChange={(e) => onSearch(e.target.value)}
+        />
+        {q.trim() !== '' && (
+          <ul className="roster">
+            {searching && <li className="muted empty">searching…</li>}
+            {!searching && hits.length === 0 && (
+              <li className="muted empty">No profile found for “{q}”.</li>
+            )}
+            {hits.map((h) => (
+              <RosterCard
+                key={h.address}
+                address={h.address}
+                presetName={h.name}
+                convPub={null}
+                openDm={openDm}
+              />
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <ul className="roster">
+        {others.length === 0 && (
+          <li className="muted empty">
+            No announced profiles in range yet. Once a UP announces its key it appears here —
+            or search above to DM anyone directly.
+          </li>
+        )}
+        {others.map((r) => (
+          <RosterCard
+            key={r.address}
+            address={r.address}
+            presetName={null}
+            convPub={r.convPub}
+            openDm={openDm}
+          />
+        ))}
+      </ul>
+    </>
+  );
+}
+
+/** One profile row in the Discover directory / search results. */
+function RosterCard({
+  address,
+  presetName,
+  convPub,
+  openDm,
+}: {
+  address: string;
+  presetName: string | null;
+  convPub: string | null;
+  openDm: (name: string, address: string) => void;
+}) {
+  // Prefer the name the search already gave us; else reverse-resolve.
+  const resolved = useName(address);
+  const name = presetName ? `@${presetName}` : resolved;
+  const display = name || short(address);
+  const dmName = (presetName ?? (name.startsWith('@') ? name.slice(1) : '')) || short(address);
+
+  return (
+    <li className="rostercard">
+      <div className="rosterid">
+        <span className="rostername">{display}</span>
+        <a
+          className="mono small muted"
+          href={`${EXPLORER}/address/${address}`}
+          target="_blank"
+          rel="noreferrer"
+        >
+          {short(address)} ↗
+        </a>
+        {convPub && (
+          <span className="mono small muted" title={`announced conv pubkey: ${convPub}`}>
+            🔑 {short(convPub)}
+          </span>
+        )}
+      </div>
+      <button className="btn small" onClick={() => openDm(dmName, address)}>
+        🔒 Message
+      </button>
+    </li>
   );
 }
 

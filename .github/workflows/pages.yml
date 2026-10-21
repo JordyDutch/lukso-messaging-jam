@@ -1,0 +1,64 @@
+name: Deploy frontend2 to GitHub Pages
+
+# Builds the static Wall dApp (frontend2/) and publishes it to GitHub Pages.
+# Fully static: the LUKSO chain is the signaling bus, Envio/STUN/RPC are all
+# public endpoints, there is no backend. Users need a UP browser extension.
+#
+# Base path is /<repo>/ for a project Pages site. Override TURN at build time
+# with VITE_TURN_URL / VITE_TURN_USERNAME / VITE_TURN_CREDENTIAL repo secrets
+# (optional — STUN-only still works on friendly NATs).
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'frontend2/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend2/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - name: Build (Pages base + optional TURN)
+        env:
+          VITE_BASE: /${{ github.event.repository.name }}/
+          VITE_TURN_URL: ${{ secrets.VITE_TURN_URL }}
+          VITE_TURN_USERNAME: ${{ secrets.VITE_TURN_USERNAME }}
+          VITE_TURN_CREDENTIAL: ${{ secrets.VITE_TURN_CREDENTIAL }}
+        run: npm run build
+      - name: SPA fallback (404 -> index)
+        run: cp dist/index.html dist/404.html
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: frontend2/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
