@@ -7,3 +7,5 @@ dist/
 node_modules/.tmp/
 contracts/registry-v3-state.json
 test/e2e-live/_bundle.generated.mjs
+test/e2e-live/_webrtc_entry.ts
+test/e2e-live/_webrtc_harness.html
