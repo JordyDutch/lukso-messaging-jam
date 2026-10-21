@@ -5,3 +5,8 @@ poc/node_modules/
 npm-debug.log*
 # keep build/MessageAnchor.json (small, useful artifact) — do NOT ignore build/
 /tmp/
+
+# e2e-lab: secrets and local run state — NEVER commit (hold controller privkeys)
+poc/up-wg-handshake/e2e-lab/keys/
+poc/up-wg-handshake/e2e-lab/run/
+poc/up-wg-handshake/e2e-lab/*-state.json
