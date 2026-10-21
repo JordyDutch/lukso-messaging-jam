@@ -91,33 +91,68 @@ export async function fetchAndOpenSession(args: {
   return { sdp: opened.sdp, fingerprint: opened.fingerprint, verifiedFrom: opened.verifiedFrom };
 }
 
-/** Subscribe to inbound SessionAnnounced events addressed to `me`. */
+/**
+ * Subscribe to inbound SessionAnnounced events addressed to `me`.
+ *
+ * Implemented as a `getLogs` (queryFilter) poller rather than ethers'
+ * `contract.on()`. The public LUKSO RPCs (thirdweb, lukso.network) do NOT keep
+ * server-side eth_newFilter state alive: an `eth_getFilterChanges` poll comes
+ * back `-32000 "filter not found"` within seconds, so `contract.on()` silently
+ * stops delivering inbound offers/answers — i.e. an incoming call would never
+ * reach the callee. Proven against live RegistryV3 on 2026-10-21 (the sealed
+ * offer WAS on-chain; only the filter subscription died). queryFilter over a
+ * moving block window is well-supported and reliable on the same RPCs.
+ */
 export async function watchInbound(
   me: string,
   cb: (s: IncomingSession) => void,
+  opts: { pollMs?: number; lookbackBlocks?: number } = {},
 ): Promise<() => void> {
   const reg = await readRegistry();
+  const provider = reg.runner?.provider;
+  if (!provider) throw new Error('read registry has no provider for polling');
   const filter = reg.filters.SessionAnnounced(null, me);
-  const handler = (
-    from: string,
-    _to: string,
-    threadId: string,
-    bodyHash: string,
-    blobRef: string,
-    kind: bigint,
-    expiry: bigint,
-  ) => {
+  const pollMs = opts.pollMs ?? 4000;
+  const lookback = opts.lookbackBlocks ?? 10;
+
+  const seen = new Set<string>(); // logId = txHash:logIndex, dedupe across polls
+  let from = Math.max(0, (await provider.getBlockNumber()) - lookback);
+  let stopped = false;
+
+  const emit = (log: ethers.EventLog | ethers.Log) => {
+    const id = `${log.transactionHash}:${log.index}`;
+    if (seen.has(id)) return;
+    seen.add(id);
+    const a = (log as ethers.EventLog).args;
+    if (!a) return;
     cb({
-      from: ethers.getAddress(from),
-      threadId,
-      kind: Number(kind) === SESSION_KIND.offer ? 'offer' : 'answer',
-      bodyHash,
-      blobRef,
-      expiry: Number(expiry),
+      from: ethers.getAddress(a.from),
+      threadId: a.threadId,
+      kind: Number(a.kind) === SESSION_KIND.offer ? 'offer' : 'answer',
+      bodyHash: a.bodyHash,
+      blobRef: a.blobRef,
+      expiry: Number(a.expiry),
     });
   };
-  await reg.on(filter, handler);
+
+  const tick = async () => {
+    if (stopped) return;
+    try {
+      const to = await provider.getBlockNumber();
+      if (to >= from) {
+        const logs = await reg.queryFilter(filter, from, to);
+        for (const l of logs) emit(l);
+        from = to + 1;
+      }
+    } catch {
+      // transient RPC hiccup — keep the window and retry next tick
+    }
+    if (!stopped) timer = setTimeout(tick, pollMs);
+  };
+
+  let timer: ReturnType<typeof setTimeout> = setTimeout(tick, 0);
   return () => {
-    reg.off(filter, handler);
+    stopped = true;
+    clearTimeout(timer);
   };
 }

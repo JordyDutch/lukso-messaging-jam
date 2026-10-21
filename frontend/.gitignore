@@ -6,3 +6,4 @@ dist/
 !.env.example
 node_modules/.tmp/
 contracts/registry-v3-state.json
+test/e2e-live/_bundle.generated.mjs
