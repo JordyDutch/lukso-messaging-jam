@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LUKSO Inbox — blaise8</title>
+<style>
+  :root { color-scheme: dark; --bg:#0e1116; --card:#161b24; --line:#232b38; --txt:#e6ebf2; --dim:#8b98ab; --acc:#4f9cff; --ok:#3ecf8e; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt); font:15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 16px 14px 60px; }
+  header { display:flex; flex-wrap:wrap; gap:8px; align-items:baseline; justify-content:space-between; margin-bottom:4px; }
+  h1 { font-size:19px; margin:0; }
+  h1 .dim { color:var(--dim); font-weight:400; font-size:13px; }
+  .meta { color:var(--dim); font-size:12.5px; margin-bottom:14px; word-break:break-all; }
+  .meta a { color:var(--acc); text-decoration:none; }
+  .bar { display:flex; gap:10px; align-items:center; margin-bottom:14px; flex-wrap:wrap; }
+  .status { font-size:12.5px; color:var(--dim); }
+  .status.ok { color:var(--ok); }
+  .status.err { color:#ff7b7b; }
+  button { background:var(--acc); border:0; color:#fff; border-radius:8px; padding:7px 14px; font-size:13.5px; cursor:pointer; }
+  button:disabled { opacity:.5; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:12px; }
+  .card .head { display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
+  .card .who { font-size:13.5px; }
+  .card .who b { color:var(--txt); }
+  .card .who .dim { color:var(--dim); }
+  .badge { display:inline-block; font-size:11px; padding:2px 8px; border-radius:99px; background:#12324d; color:var(--acc); margin-left:6px; vertical-align:1px; }
+  .badge.to-you { background:#123c2b; color:var(--ok); }
+  pre.body { margin:10px 0 0; padding:12px; background:#0b0e13; border:1px solid var(--line); border-radius:8px; white-space:pre-wrap; word-break:break-word; font:13.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .foot { color:var(--dim); font-size:12px; margin-top:18px; }
+  .foot a { color:var(--acc); text-decoration:none; }
+  .empty { color:var(--dim); padding:24px 0; text-align:center; }
+  a.addr { color:var(--acc); text-decoration:none; font-family:ui-monospace, monospace; font-size:12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>LUKSO Inbox <span class="dim">— blaise8</span></h1>
+    <button id="refresh" onclick="load()">Refresh</button>
+  </header>
+  <div class="meta" id="meta">loading…</div>
+  <div class="bar"><span class="status" id="status"></span></div>
+  <div id="list"></div>
+  <div class="foot">
+    Messages are read straight from the <a href="https://explorer.lukso.network/address/0x64cB5aa841aB05A8fe586baf22924468259C493F" target="_blank">MessageBoard contract</a>
+    (<code>eth_call</code> via public LUKSO mainnet RPC, no keys, no scan — works from any browser on the network).
+    Auto-refreshes every 15&nbsp;s.
+  </div>
+</div>
+<script>
+"use strict";
+// ---- config ----
+const RPCS = [
+  "https://42.rpc.thirdweb.com",
+  "https://rpc.mainnet.lukso.network",
+];
+const BOARD  = "0x64cB5aa841aB05A8fe586baf22924468259C493F";
+const MINE   = "0xa857e696bd0f689c2120061e3a61e8e0103c2d79"; // blaise8 UP
+const EXPLORER = "https://explorer.lukso.network";
+// function selectors (verified against deployed bytecode)
+const SEL = { count: "0x06661abd", posts: "0x0b1e7f83", postBody: "0x96dad310" };
+
+async function rpc(method, params) {
+  let lastErr;
+  for (const url of RPCS) {
+    try {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      });
+      const j = await r.json();
+      if (j.error) throw new Error(j.error.message || JSON.stringify(j.error));
+      return j.result;
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error("all RPCs failed");
+}
+
+const short = (a) => a ? a.slice(0, 6) + "…" + a.slice(-4) : "";
+const word  = (n) => n.toString(16).padStart(64, "0");
+function utf8FromHex(hex) {
+  try {
+    return new TextDecoder("utf-8").decode(Uint8Array.from(hex.match(/../g) || [], (h) => parseInt(h, 16)));
+  } catch { return "(undecodable)"; }
+}
+const addrLink = (a) => `<a class="addr" href="${EXPLORER}/address/${a}" target="_blank">${short(a)}</a>`;
+
+async function load() {
+  const status = document.getElementById("status");
+  status.className = "status";
+  status.textContent = "reading chain…";
+  const list = document.getElementById("list");
+  try {
+    const countHex = await rpc("eth_call", [{ to: BOARD, data: SEL.count }, "latest"]);
+    const count = parseInt(countHex, 16) || 0;
+    document.getElementById("meta").innerHTML =
+      `board: ${addrLink(BOARD)} &nbsp;·&nbsp; you: <span class="dim">${short(MINE)}</span> &nbsp;·&nbsp; posts on board: <b>${count}</b>`;
+    if (count === 0) {
+      list.innerHTML = '<div class="empty">No messages on the board yet.</div>';
+      status.textContent = "ok";
+      status.className = "status ok";
+      return;
+    }
+    const msgs = [];
+    for (let i = 0; i < count; i++) {
+      const [meta, bodyHex] = await Promise.all([
+        rpc("eth_call", [{ to: BOARD, data: SEL.posts + word(i) }, "latest"]),
+        rpc("eth_call", [{ to: BOARD, data: SEL.postBody + word(i) }, "latest"]),
+      ]);
+      const m = meta.slice(2);
+      // struct Post { address from; address to; uint64 timestamp; uint256 id; } = 4 words
+      const from = "0x" + m.slice(0, 64).slice(-40);
+      const to   = "0x" + m.slice(64, 128).slice(-40);
+      const ts   = parseInt(m.slice(128, 192), 16);
+      // dynamic bytes: [offset][length][data...]
+      const len  = parseInt(bodyHex.slice(66, 130), 16);
+      const text = utf8FromHex(bodyHex.slice(130, 130 + len * 2));
+      msgs.push({ i, from, to, ts, text });
+    }
+    msgs.sort((a, b) => a.i - b.i);
+    if (!msgs.length) {
+      list.innerHTML = '<div class="empty">Board is empty.</div>';
+    } else {
+      list.innerHTML = msgs.map((mg) => {
+        const toYou = mg.to.toLowerCase() === MINE;
+        const dt = new Date(mg.ts * 1000).toLocaleString();
+        return `<div class="card">
+          <div class="head">
+            <span class="who"><b>#${mg.i}</b> from ${addrLink(mg.from)} <span class="dim">to ${addrLink(mg.to)}</span>
+              ${toYou ? '<span class="badge to-you">to you</span>' : '<span class="badge">other</span>'}</span>
+            <span class="who dim">${dt}</span>
+          </div>
+          <pre class="body">${mg.text.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</pre>
+        </div>`;
+      }).join("");
+    }
+    status.textContent = "ok — " + count + " post(s), refreshed " + new Date().toLocaleTimeString();
+    status.className = "status ok";
+  } catch (e) {
+    status.textContent = "error: " + String(e.message || e);
+    status.className = "status err";
+  }
+}
+load();
+setInterval(load, 15000);
+</script>
+</body>
+</html>
