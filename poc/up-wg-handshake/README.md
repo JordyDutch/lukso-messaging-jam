@@ -9,8 +9,9 @@ touched. NAT traversal and actually raising `wg` are out of scope here.
 ## Run
 ```bash
 cd ..                      # poc/ (has node_modules: ethers, @noble/*)
-node up-wg-handshake/handshake.mjs
-./up-wg-handshake/verify-wg-interop.sh
+node up-wg-handshake/handshake.mjs            # crypto layer, isolated
+./up-wg-handshake/verify-wg-interop.sh        # derived key == real `wg` key
+node up-wg-handshake/mainnet-integration.mjs  # wire onto live LUKSO mainnet board + simulate
 ```
 
 ## What each proves
@@ -23,9 +24,17 @@ node up-wg-handshake/handshake.mjs
 
 `verify-wg-interop.sh` — feeds the derived private key to the real `wg` binary and confirms `wg pubkey` equals our computed X25519 pubkey. **MATCH** ⇒ the derived material is a valid WireGuard keypair with no translation.
 
-## How it maps on-chain (next steps, not in this PoC)
-- The `offer` object is exactly what rides in **LSP8 token metadata** — sending the token = the "follow"/lobby-entry signal, caught by the recipient's **Universal Receiver Delegate** (URD), which enforces the 3 access modes (private / follow-gated / open).
-- Recipient secp256k1 **pubkey** needed for ECIES is recoverable from the sender's first on-chain LSP8 signature (every transfer is a signed tx).
+## Mainnet integration (`mainnet-integration.mjs`) — DONE + simulated
+
+Wires the handshake onto the **live LUKSO mainnet** path already in `poc/lukso-mainnet`:
+- Target: `MessageBoard @ 0x64cB5aa841aB05A8fe586baf22924468259C493F` on chainId **42** — live-verified (1589 B code, `count()=1`, gas ~0.69 Gwei, 2026-10-21).
+- **Size constraint caught by self-simulation:** the board caps bodies at **200 B**. A naive JSON/base64 offer was **206 B — over budget**. Fixed by (a) a compact binary `core = wgPub(32)||nonce(12)||expiry(5)||endpoint`, (b) `core||sig(65)` sealed as **raw-bytes AES-256-GCM** (not the shared `e2ee.encrypt`, which forces utf8+base64 and inflates binary). Result: **162 B ✓ fits**.
+- One post carries both properties: **confidentiality** (conversation-key AES-GCM envelope) + **authenticity** (EIP-191 UP signature *inside* the envelope). `board.post(to, body)` is the "follow"/lobby signal.
+- Simulated end-to-end with **no tx broadcast** (no key spend): build → post-bytes → unseal → verify signature → derive both WG keys. Adversarial: flipped-ciphertext, wrong-recipient, wrong-claimed-sender all **rejected**. Set `BROADCAST=1` + a funded signer to actually send (spends real LYX) — left as the deliberate manual final step.
+
+## How it maps on-chain (remaining, not in this PoC)
+- The same body rides in **LSP8 token metadata** — sending the token = the "follow"/lobby-entry signal, caught by the recipient's **Universal Receiver Delegate** (URD), which enforces the 3 access modes (private / follow-gated / open).
+- Recipient conversation pubkey is exchanged/recoverable from the first on-chain signed tx (every LSP8 transfer is signed).
 - LSP6 KeyManager exposes the controller map; user/mobile app picks the "encryption controller".
 - Still open: **NAT traversal** (needs public IP or light STUN), defensive gas-bounded URD, replay/TTL enforcement on-chain.
 
