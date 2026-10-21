@@ -179,7 +179,13 @@ async function main() {
     me.ondatachannel = (e) => {
       const ch = e.channel; channel = ch;
       ch.onopen = () => { console.log('\n⚡ DataChannel OPEN — off-chain link established. Sending greeting.'); ch.send('alice here, off-chain over WebRTC 👋 (no chain from here on)'); };
-      ch.onmessage = (ev) => { console.log('  ← caller:', String(ev.data)); try { ch.send('alice got: ' + String(ev.data)); } catch {} };
+      ch.onmessage = (ev) => {
+        const msg = String(ev.data);
+        console.log('  ← caller:', msg);
+        // alice replies conversationally to whatever B typed in the browser.
+        const reply = `alice ↩ heard you say "${msg}" — loud and clear over the off-chain channel at ${new Date().toLocaleTimeString()}. No chain touched. 🛰️`;
+        try { ch.send(reply); } catch (e) { console.log('  send failed:', e.message); }
+      };
     };
     await me.setRemoteDescription({ type: 'offer', sdp: offerSdp });
     const ans = await me.createAnswer(); await me.setLocalDescription(ans); await iceComplete(me);
