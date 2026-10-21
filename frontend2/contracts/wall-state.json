@@ -1,0 +1,189 @@
+{
+  "address": "0xd3a767c7fE981524810aF7bdE05FA6537B96f58E",
+  "deployTx": "0xba6e84e2bc3e5b19d7d750728b0c2a5be11a797ab4b1e0dcea04ddea4afb2fd3",
+  "chainId": 42,
+  "abi": [
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "maxLen",
+          "type": "uint256"
+        },
+        {
+          "internalType": "uint256",
+          "name": "got",
+          "type": "uint256"
+        }
+      ],
+      "name": "BodyTooLong",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "DmNeedsRecipient",
+      "type": "error"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "uint256",
+          "name": "id",
+          "type": "uint256"
+        },
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "from",
+          "type": "address"
+        },
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "tag",
+          "type": "address"
+        },
+        {
+          "indexed": false,
+          "internalType": "bool",
+          "name": "encrypted",
+          "type": "bool"
+        },
+        {
+          "indexed": false,
+          "internalType": "bytes32",
+          "name": "threadId",
+          "type": "bytes32"
+        },
+        {
+          "indexed": false,
+          "internalType": "uint64",
+          "name": "timestamp",
+          "type": "uint64"
+        },
+        {
+          "indexed": false,
+          "internalType": "bytes",
+          "name": "body",
+          "type": "bytes"
+        }
+      ],
+      "name": "Posted",
+      "type": "event"
+    },
+    {
+      "inputs": [],
+      "name": "MAX_BODY",
+      "outputs": [
+        {
+          "internalType": "uint256",
+          "name": "",
+          "type": "uint256"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "",
+          "type": "uint256"
+        }
+      ],
+      "name": "bodyOf",
+      "outputs": [
+        {
+          "internalType": "bytes",
+          "name": "",
+          "type": "bytes"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [],
+      "name": "count",
+      "outputs": [
+        {
+          "internalType": "uint256",
+          "name": "",
+          "type": "uint256"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "tag",
+          "type": "address"
+        },
+        {
+          "internalType": "bool",
+          "name": "encrypted",
+          "type": "bool"
+        },
+        {
+          "internalType": "bytes32",
+          "name": "threadId",
+          "type": "bytes32"
+        },
+        {
+          "internalType": "bytes",
+          "name": "body",
+          "type": "bytes"
+        }
+      ],
+      "name": "post",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "",
+          "type": "uint256"
+        }
+      ],
+      "name": "posts",
+      "outputs": [
+        {
+          "internalType": "address",
+          "name": "from",
+          "type": "address"
+        },
+        {
+          "internalType": "address",
+          "name": "tag",
+          "type": "address"
+        },
+        {
+          "internalType": "uint64",
+          "name": "timestamp",
+          "type": "uint64"
+        },
+        {
+          "internalType": "bool",
+          "name": "encrypted",
+          "type": "bool"
+        },
+        {
+          "internalType": "bytes32",
+          "name": "threadId",
+          "type": "bytes32"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "alice": {
+    "controller": "0xE9e848DB589557bDF3e4443160Ef399B09b96B15",
+    "salt": "0xe198a142c4075022ab58b801dd0a8407a730c86a70c014c4b75ce213af35b071",
+    "upAddress": "0xA02B2b0cB13a87824B0e42C951de3B1a20ECbA5C",
+    "kmAddress": "0x7D48449F927F1B089B8eB406b48f4A2dB334cf5d",
+    "deployTx": "0x60cdfe2f7dccaf4020cbe40281b81d16db8ee5c8ce2bd98d38ff0aea52c605cb",
+    "fundedUp": true
+  },
+  "bob": {
+    "controller": "0xC5cC4A4F8633373693b626ACB77B2Cc1d41e525c",
+    "salt": "0x2ebf0babad02d66b4471e817c5b86d8cd09a0cd91acd0ca7da0a8cbdac8446d9",
+    "upAddress": "0xf380f128b69c5EC2dffafC7Dd3f80DFDed0f509C",
+    "kmAddress": "0xea3ee1808432291cCc9054D8006B9B9B86D4cc9b",
+    "deployTx": "0x84d7fdcde490c92775480ecfde849cd75e92de413aa1c4d02a87a20345a81c4d",
+    "fundedUp": true
+  }
+}
