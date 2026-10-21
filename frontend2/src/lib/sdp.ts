@@ -46,13 +46,42 @@ function parse(sdp: string): Parsed {
   };
 }
 
-/** Keep the host + first srflx candidate; drop relay/tcp/IPv6 extras. */
+/** The connection-address field (index 4) of a "candidate:..." line. */
+function candAddr(c: string): string {
+  // candidate:<foundation> <component> <transport> <priority> <address> <port> typ ...
+  return c.split(/\s+/)[4] ?? '';
+}
+/** True if the candidate's connection address is IPv6 (contains a colon). */
+function isIpv6(c: string): boolean {
+  return candAddr(c).includes(':');
+}
+/** True for a loopback / unroutable address we should never advertise. */
+function isLoopback(c: string): boolean {
+  const a = candAddr(c);
+  return a === '127.0.0.1' || a === '::1';
+}
+/** mDNS host candidate (Chrome privacy): a UUID ".local" name the peer can't resolve. */
+function isMdns(c: string): boolean {
+  return candAddr(c).endsWith('.local');
+}
+
+/**
+ * Keep the routable host + first srflx UDP candidate; drop tcp/IPv6/loopback.
+ * NOTE: the colon test is on the ADDRESS field only — every candidate string
+ * starts with "candidate:", so a naive `c.includes(':')` drops everything.
+ */
 function pickCandidates(cands: string[]): string[] {
-  const udp = cands.filter((c) => /\budp\b/i.test(c) && !c.includes(':')); // IPv4 udp only
-  const host = udp.find((c) => /typ host/.test(c));
+  const udp = cands.filter(
+    (c) => /\budp\b/i.test(c) && !isIpv6(c) && !isLoopback(c) && !isMdns(c),
+  );
+  const hosts = udp.filter((c) => /typ host/.test(c));
+  // Prefer a VPN (10.8.0.x) host first — on this deployment both peers share the
+  // WireGuard subnet, so that pair connects directly. Keep up to two hosts + the
+  // first srflx; all of this still fits the 1024 B DM budget comfortably.
+  hosts.sort((a, b) => (candAddr(a).startsWith('10.8.') ? -1 : 0) - (candAddr(b).startsWith('10.8.') ? -1 : 0));
   const srflx = udp.find((c) => /typ srflx/.test(c));
-  const out = [host, srflx].filter(Boolean) as string[];
-  // Fall back to whatever we have if the typed filter found nothing.
+  const out = [...hosts.slice(0, 2), srflx].filter(Boolean) as string[];
+  // Fall back to whatever UDP we have if the typed filter found nothing.
   return out.length ? out : udp.slice(0, 2);
 }
 

@@ -28,6 +28,48 @@ interface EnvioRow {
   profileImages?: { url: string | null }[];
 }
 
+const BY_ID = `
+  query ById($id: String!) {
+    LSP3ProfileMetadata_by_pk: search_profiles_v2(args: { search: $id }, limit: 1) {
+      id
+      name
+    }
+  }
+`;
+
+const nameCache = new Map<string, string | null>();
+
+/**
+ * Reverse-resolve a UP address to its @name (LSP3), cached per session.
+ * Returns null if the profile has no name or the indexer can't be reached — the
+ * UI falls back to a short address in that case.
+ */
+export async function nameOf(address: string): Promise<string | null> {
+  if (!ethers.isAddress(address)) return null;
+  const key = ethers.getAddress(address);
+  const cached = nameCache.get(key);
+  if (cached !== undefined) return cached;
+  try {
+    const res = await fetch(ENVIO_GRAPHQL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ query: BY_ID, variables: { id: key } }),
+    });
+    if (!res.ok) throw new Error(`envio ${res.status}`);
+    const json = (await res.json()) as {
+      data?: { LSP3ProfileMetadata_by_pk?: EnvioRow[] };
+    };
+    const rows = json.data?.LSP3ProfileMetadata_by_pk ?? [];
+    const hit = rows.find((r) => ethers.isAddress(r.id) && ethers.getAddress(r.id) === key);
+    const name = hit?.name ?? null;
+    nameCache.set(key, name);
+    return name;
+  } catch {
+    nameCache.set(key, null);
+    return null;
+  }
+}
+
 export async function resolveName(input: string): Promise<ProfileHit[]> {
   const trimmed: string = input.trim();
   if (!trimmed) return [];
