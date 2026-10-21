@@ -51,20 +51,22 @@ async function feeOf(p) {
   return base * 110n / 100n; // +10% buffer
 }
 
-async function sendWithRetry(wallet, p, tx, label, attempts = 3) {
+async function sendWithRetry(wallet, p, base, label, attempts = 3) {
   for (let i = 0; i < attempts; i++) {
+    // always refresh nonce + fee from chain (pending) before each attempt
+    const tx = { ...base, nonce: await p.getTransactionCount(wallet.address, 'pending'), gasPrice: await feeOf(p) };
     try {
       const t = await wallet.sendTransaction(tx);
       console.log(`${label}: tx ${t.hash}`);
-      const rcpt = await p.waitForReceipt(t.hash, 3);
+      const rcpt = await p.waitForTransaction(t.hash, 3, 180_000);
+      if (!rcpt) throw new Error(`timeout waiting for ${t.hash}`);
       if (rcpt.status !== 1) throw new Error(`tx reverted: ${t.hash}`);
       return t;
     } catch (e) {
       console.error(`${label} attempt ${i + 1} failed:`, String(e).split('\n')[0]);
       if (i === attempts - 1) throw e;
-      await sleep(5000);
-      tx.nonce = await p.getTransactionCount(wallet.address);
-      tx.gasPrice = await feeOf(p);
+      // tx may still have been broadcast and mined; give it a moment before retrying
+      await sleep(10_000);
     }
   }
 }
