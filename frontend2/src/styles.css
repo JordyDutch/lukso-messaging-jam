@@ -145,3 +145,20 @@ section { margin-top: 20px; }
 .p2pmsg.mine { background: rgba(80,120,255,.14); text-align: right; }
 .p2pcompose { display: flex; gap: .4rem; }
 .p2pcompose input { flex: 1; }
+
+/* @tag mentions */
+.tab .badge {
+  display: inline-block;
+  margin-left: 6px;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: #e11d48;
+  color: #fff;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+  vertical-align: middle;
+}
+.tagged { color: #9aa4b2; }
+.tagged.tagme { color: #22c55e; font-weight: 600; }

@@ -30,6 +30,7 @@ import {
   type SignLike,
 } from './crypto';
 import { convPubOf } from './registry';
+import { getReadProvider } from './rpc';
 import { postDm, type WallPost } from './wall';
 import {
   makeCertificate,
@@ -52,6 +53,26 @@ const TTL_SECONDS = 600; // a signaling envelope is valid 10 min
 export const P2P_MAGIC = enc.encode('p2p1:');
 
 const u16be = (n: number): Uint8Array => Uint8Array.from([(n >> 8) & 0xff, n & 0xff]);
+
+// A Universal Profile is a contract, so a plain-ECDSA signature never recovers to
+// the UP address — it recovers to the controller EOA that signed it. The correct
+// authenticity check is ERC-1271: ask the UP whether the (hash, sig) pair is valid;
+// LSP0 delegates to its LSP6 KeyManager and returns the magic value iff the signer
+// is an authorized controller. This survives key rotation and multiple controllers.
+const ERC1271_MAGIC = '0x1626ba7e';
+const ERC1271_ABI = ['function isValidSignature(bytes32 hash, bytes signature) view returns (bytes4)'];
+
+/** Verify `sig` over `hash` is from an authorized controller of UP `upAddr`. */
+async function isValidUpSignature(upAddr: string, hash: string, sig: string): Promise<boolean> {
+  try {
+    const provider = await getReadProvider();
+    const up = new ethers.Contract(upAddr, ERC1271_ABI, provider);
+    const res: string = await up.isValidSignature(hash, sig);
+    return res.toLowerCase() === ERC1271_MAGIC;
+  } catch {
+    return false;
+  }
+}
 const expiryBytes = (s: number): Uint8Array =>
   ethers.getBytes(ethers.zeroPadValue(ethers.toBeHex(s), 5));
 
@@ -121,9 +142,15 @@ async function openEnvelope(args: {
 
   const sig = ethers.hexlify(payload.subarray(payload.length - 65));
   const core = payload.subarray(0, payload.length - 65);
-  const recovered = ethers.verifyMessage(ethers.getBytes(ethers.keccak256(core)), sig);
-  if (recovered.toLowerCase() !== ethers.getAddress(args.peerAddr).toLowerCase()) {
-    throw new Error(`signature mismatch (MITM?) recovered=${recovered}`);
+  // The signer is the UP's controller EOA (signMessage over the keccak of core).
+  const innerHash = ethers.getBytes(ethers.keccak256(core));
+  const recovered = ethers.verifyMessage(innerHash, sig);
+  // Authenticity = recovered must be an authorized controller of the peer UP.
+  // The EIP-191-prefixed hash is what was actually signed; that is what ERC-1271 checks.
+  const eip191Hash = ethers.hashMessage(innerHash);
+  const ok = await isValidUpSignature(args.peerAddr, eip191Hash, sig);
+  if (!ok) {
+    throw new Error(`signature not from a controller of ${args.peerAddr} (MITM?) recovered=${recovered}`);
   }
 
   let o = 0;

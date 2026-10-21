@@ -16,7 +16,7 @@ import {
 } from '../lib/wall';
 import { convPubOf } from '../lib/registry';
 import { threadIdFor } from '../lib/crypto';
-import { resolveName, type ProfileHit } from '../lib/names';
+import { resolveName, nameOf, type ProfileHit } from '../lib/names';
 import { EXPLORER, KNOWN_PEERS } from '../lib/config';
 import { ethers } from 'ethers';
 import {
@@ -27,7 +27,39 @@ import {
   type P2pStatus,
 } from '../lib/p2p';
 
-type Tab = { kind: 'public' } | { kind: 'dm'; name: string; address: string };
+type Tab = { kind: 'public' } | { kind: 'mentions' } | { kind: 'dm'; name: string; address: string };
+
+const ZERO = '0x0000000000000000000000000000000000000000';
+
+/**
+ * useName — reverse-resolve a UP address to its @name (cached in names.ts),
+ * returning a display string: "@name" when known, else a short address.
+ */
+function useName(address: string | null | undefined): string {
+  const [name, setName] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    setName(null);
+    if (address && address !== ZERO) {
+      nameOf(address).then((n) => live && setName(n)).catch(() => {});
+    }
+    return () => {
+      live = false;
+    };
+  }, [address]);
+  if (!address || address === ZERO) return '';
+  return name ? `@${name}` : short(address);
+}
+
+/** Address label that resolves to @name, falling back to a linked short address. */
+function Who({ address }: { address: string }) {
+  const label = useName(address);
+  return (
+    <a className="mono" href={`${EXPLORER}/address/${address}`} target="_blank" rel="noreferrer">
+      {label || short(address)}
+    </a>
+  );
+}
 
 export function Wall() {
   const { state, dispatch } = useApp();
@@ -74,6 +106,12 @@ export function Wall() {
     [decoded],
   );
 
+  // Public posts that @tag the connected UP — "someone mentioned you".
+  const mentions = useMemo(
+    () => publicFeed.filter((p) => p.tag.toLowerCase() === meLc && p.from.toLowerCase() !== meLc),
+    [publicFeed, meLc],
+  );
+
   const dmThread = useMemo(() => {
     if (tab.kind !== 'dm') return [];
     const tid = threadIdFor(up.address, tab.address).toLowerCase();
@@ -107,6 +145,13 @@ export function Wall() {
           >
             🧱 Wall (public)
           </button>
+          <button
+            className={tab.kind === 'mentions' ? 'tab active' : 'tab'}
+            onClick={() => setTab({ kind: 'mentions' })}
+          >
+            @ Mentions
+            {mentions.length > 0 && <span className="badge">{mentions.length}</span>}
+          </button>
           {KNOWN_PEERS.map((p) => (
             <button
               key={p.address}
@@ -122,6 +167,8 @@ export function Wall() {
       <section className="feed">
         {tab.kind === 'public' ? (
           <PublicPane me={meLc} up={up} feed={publicFeed} />
+        ) : tab.kind === 'mentions' ? (
+          <MentionsPane me={meLc} feed={mentions} />
         ) : (
           <DmPane
             up={up}
@@ -221,10 +268,48 @@ function PublicPane({ me, up, feed }: { me: string; up: ReturnType<typeof useApp
         {[...feed].reverse().map((p) => (
           <li key={p.id} className={p.from.toLowerCase() === me ? 'post mine' : 'post'}>
             <div className="posthead">
-              <a className="mono" href={`${EXPLORER}/address/${p.from}`} target="_blank" rel="noreferrer">{short(p.from)}</a>
-              {p.tag !== '0x0000000000000000000000000000000000000000' && (
-                <span className="tagged"> → @{short(p.tag)}</span>
+              <Who address={p.from} />
+              {p.tag !== ZERO && (
+                <span className={p.tag.toLowerCase() === me ? 'tagged tagme' : 'tagged'}> → <Tag address={p.tag} /></span>
               )}
+              <span className="ts">{fmt(p.timestamp)}</span>
+            </div>
+            <div className="body">{p.text}</div>
+            <a className="small muted" href={`${EXPLORER}/tx/${p.txHash}`} target="_blank" rel="noreferrer">on-chain ↗</a>
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
+/** Inline @tag label that resolves to @name. */
+function Tag({ address }: { address: string }) {
+  const label = useName(address);
+  return <>{label || short(address)}</>;
+}
+
+/**
+ * MentionsPane — every public post that @tags the connected UP, newest first.
+ * Surfaces "who mentioned you and what they said", with tagger resolved to @name.
+ */
+function MentionsPane({ me, feed }: { me: string; feed: WallPost[] }) {
+  return (
+    <>
+      <div className="composer">
+        <div className="small muted">
+          @ Mentions — public posts that tagged you. {feed.length} total.
+        </div>
+      </div>
+      <ul className="posts">
+        {feed.length === 0 && (
+          <li className="muted empty">No one has mentioned you yet. When a public post @tags your UP, it shows up here.</li>
+        )}
+        {[...feed].reverse().map((p) => (
+          <li key={p.id} className={p.from.toLowerCase() === me ? 'post mine' : 'post'}>
+            <div className="posthead">
+              <Who address={p.from} />
+              <span className="tagged tagme"> → you</span>
               <span className="ts">{fmt(p.timestamp)}</span>
             </div>
             <div className="body">{p.text}</div>
