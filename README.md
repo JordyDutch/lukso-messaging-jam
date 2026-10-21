@@ -149,5 +149,4 @@ that reason. Design discussion belongs in `docs/DESIGN.md` and `docs/FAQ.md`.
 
 ## License
 
-No license file yet — treat as all-rights-reserved until one is added (open-source
-license decision pending).
+[MIT](LICENSE) © 2026 m8b-dev.
