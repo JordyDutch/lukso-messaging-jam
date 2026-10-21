@@ -42,9 +42,18 @@ export interface WallPost {
   // filled in by the decoder:
   text?: string; // decoded plaintext, or decrypted DM text
   locked?: boolean; // encrypted and we cannot decrypt
+  signal?: boolean; // P2P WebRTC signaling envelope — not a human message
 }
 
 const ZERO = '0x0000000000000000000000000000000000000000';
+
+/** ASCII "p2p1:" — the P2P signaling prefix (kept in sync with p2p.ts P2P_MAGIC). */
+const P2P_MAGIC_HEX = '70327031';
+
+/** Cheap check (no decrypt): is this encrypted body a P2P signaling envelope? */
+function looksLikeP2pSignal(bodyRaw: string): boolean {
+  return bodyRaw.replace(/^0x/, '').toLowerCase().startsWith(P2P_MAGIC_HEX);
+}
 
 export function readWall(provider: ethers.Provider): ethers.Contract {
   return new ethers.Contract(WALL_ADDRESS, WALL_ABI, provider);
@@ -76,15 +85,23 @@ export async function postDm(args: {
   myAddr: string;
   myConvPriv: Uint8Array;
   peerAddr: string;
-  text: string;
+  /** plaintext to seal, OR … */
+  text?: string;
+  /** … already-sealed bytes to send verbatim (used by P2P signaling, p2p.ts). */
+  rawBody?: Uint8Array;
 }): Promise<string> {
-  const peerPubHex = await convPubOf(args.peerAddr);
-  if (!peerPubHex) throw new Error('peer has not announced a conversation key yet');
   const threadId = threadIdFor(args.myAddr, args.peerAddr);
-  const key = conversationKey(args.myConvPriv, ub(peerPubHex), threadId);
-  const ct = await sealBytes(enc.encode(args.text), key);
+  let body: Uint8Array;
+  if (args.rawBody) {
+    body = args.rawBody;
+  } else {
+    const peerPubHex = await convPubOf(args.peerAddr);
+    if (!peerPubHex) throw new Error('peer has not announced a conversation key yet');
+    const key = conversationKey(args.myConvPriv, ub(peerPubHex), threadId);
+    body = await sealBytes(enc.encode(args.text ?? ''), key);
+  }
   const wall = writeWall(args.signer);
-  const tx = await wall.post(args.peerAddr, true, threadId, ct);
+  const tx = await wall.post(args.peerAddr, true, threadId, body);
   await tx.wait();
   return tx.hash;
 }
@@ -114,6 +131,12 @@ export async function decodePosts(
   for (const p of posts) {
     if (!p.encrypted) {
       out.push({ ...p, text: safeUtf8(p.bodyRaw) });
+      continue;
+    }
+    // P2P signaling envelope: a bootstrap message for the off-chain channel, not
+    // a human chat line. Mark it so the UI can hide it from the DM thread.
+    if (looksLikeP2pSignal(p.bodyRaw)) {
+      out.push({ ...p, signal: true });
       continue;
     }
     // encrypted: can I open it? Only if I'm a participant and know the peer pub.

@@ -18,6 +18,14 @@ import { convPubOf } from '../lib/registry';
 import { threadIdFor } from '../lib/crypto';
 import { resolveName, type ProfileHit } from '../lib/names';
 import { EXPLORER, KNOWN_PEERS } from '../lib/config';
+import { ethers } from 'ethers';
+import {
+  P2pDriver,
+  startCall,
+  answerCall,
+  isInboundSignal,
+  type P2pStatus,
+} from '../lib/p2p';
 
 type Tab = { kind: 'public' } | { kind: 'dm'; name: string; address: string };
 
@@ -70,7 +78,9 @@ export function Wall() {
     if (tab.kind !== 'dm') return [];
     const tid = threadIdFor(up.address, tab.address).toLowerCase();
     return decoded.filter(
-      (p) => p.encrypted && p.threadId.toLowerCase() === tid,
+      // human DM messages only; P2P signaling envelopes (signal) are hidden here
+      // and consumed by the off-chain channel panel instead.
+      (p) => p.encrypted && !p.signal && p.threadId.toLowerCase() === tid,
     );
   }, [decoded, tab, up.address]);
 
@@ -117,6 +127,7 @@ export function Wall() {
             up={up}
             peer={tab}
             thread={dmThread}
+            allPosts={decoded}
             meAnnounced={state.announced}
             peerAnnounced={!!peerAnnounced[tab.address.toLowerCase()]}
           />
@@ -229,12 +240,14 @@ function DmPane({
   up,
   peer,
   thread,
+  allPosts,
   meAnnounced,
   peerAnnounced,
 }: {
   up: ReturnType<typeof useApp>['state']['up'];
   peer: { name: string; address: string };
   thread: WallPost[];
+  allPosts: WallPost[];
   meAnnounced: boolean;
   peerAnnounced: boolean;
 }) {
@@ -276,6 +289,8 @@ function DmPane({
         </div>
       </div>
 
+      <P2pPanel up={up} peer={peer} allPosts={allPosts} ready={ready} />
+
       <ul className="posts">
         {thread.length === 0 && <li className="muted empty">No messages in this thread yet.</li>}
         {[...thread].reverse().map((p) => (
@@ -312,6 +327,164 @@ function DmPane({
       </div>
     </>
   );
+}
+
+/**
+ * P2pPanel — the off-chain channel, bootstrapped over the encrypted DM.
+ *
+ * "Go off-chain" posts a sealed WebRTC offer as a Wall DM; the peer's panel sees
+ * it in the feed, answers (another DM), and once ICE connects the DataChannel
+ * carries chat directly peer-to-peer — no further chain writes. Inbound signaling
+ * posts are pulled from the SAME decoded wall feed the DM thread uses, filtered
+ * to this peer + the P2P magic, and fed to the driver exactly once each.
+ */
+function P2pPanel({
+  up,
+  peer,
+  allPosts,
+  ready,
+}: {
+  up: ReturnType<typeof useApp>['state']['up'];
+  peer: { name: string; address: string };
+  allPosts: WallPost[];
+  ready: boolean;
+}) {
+  const [status, setStatus] = useState<P2pStatus>('idle');
+  const [fp, setFp] = useState<string | null>(null);
+  const [log, setLog] = useState<{ me: boolean; text: string }[]>([]);
+  const [input, setInput] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const driverRef = useRef<P2pDriver | null>(null);
+  const consumed = useRef<Set<number>>(new Set());
+
+  const common = useMemo(
+    () => ({
+      signer: up!.signer,
+      myAddr: up!.address,
+      myConvPriv: up!.convPriv,
+      peerAddr: peer.address,
+      cb: {
+        onStatus: setStatus,
+        onMessage: (t: string) => setLog((l) => [...l, { me: false, text: t }]),
+        onVerified: (f: string) => setFp(f),
+      },
+    }),
+    [up, peer.address],
+  );
+
+  // Reset when switching peer tab.
+  useEffect(() => {
+    driverRef.current?.hangup();
+    driverRef.current = null;
+    consumed.current = new Set();
+    setStatus('idle');
+    setFp(null);
+    setLog([]);
+    setErr(null);
+  }, [peer.address]);
+
+  // Feed inbound signaling DMs (offers/answers) to the driver, once each.
+  useEffect(() => {
+    const inbound = allPosts.filter((p) => isInboundSignal(p, up!.address, peer.address));
+    for (const p of inbound) {
+      if (consumed.current.has(p.id)) continue;
+      consumed.current.add(p.id);
+      const body = ethers.getBytes(p.bodyRaw);
+      (async () => {
+        try {
+          if (!driverRef.current) {
+            // No active call: an inbound offer — auto-answer it.
+            driverRef.current = await answerCall(common, body);
+          } else {
+            await driverRef.current.ingest(body);
+          }
+        } catch (e) {
+          setErr(e instanceof Error ? e.message : String(e));
+        }
+      })();
+    }
+  }, [allPosts, common, peer.address, up]);
+
+  async function call() {
+    setErr(null);
+    try {
+      driverRef.current = await startCall(common);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  function hangup() {
+    driverRef.current?.hangup();
+    driverRef.current = null;
+  }
+
+  function sendDirect() {
+    const t = input.trim();
+    if (!t || !driverRef.current) return;
+    if (driverRef.current.send(t)) {
+      setLog((l) => [...l, { me: true, text: t }]);
+      setInput('');
+    }
+  }
+
+  const connected = status === 'connected';
+  const active = status !== 'idle' && status !== 'closed' && status !== 'failed';
+
+  return (
+    <div className="p2p">
+      <div className="p2phead">
+        <span className="small muted">⚡ Off-chain channel (WebRTC, bootstrapped via this encrypted DM)</span>
+        <span className={`p2pstatus ${status}`}>{statusLabel(status)}</span>
+        {!active ? (
+          <button className="link" disabled={!ready} onClick={call} title={ready ? '' : 'both keys must be announced first'}>
+            Go off-chain →
+          </button>
+        ) : (
+          <button className="link" onClick={hangup}>Hang up</button>
+        )}
+      </div>
+      {fp && (
+        <div className="small mono muted" title="UP-signed DTLS fingerprint, pinned">
+          🔐 peer DTLS fp verified: {fp.slice(0, 24)}…
+        </div>
+      )}
+      {err && <p className="error small">{err}</p>}
+      {connected && (
+        <div className="p2pchat">
+          <ul className="p2plog">
+            {log.length === 0 && <li className="muted small">Channel open — messages below are direct P2P, no chain.</li>}
+            {log.map((m, i) => (
+              <li key={i} className={m.me ? 'p2pmsg mine' : 'p2pmsg'}>
+                <span className="mono small">{m.me ? 'you' : peer.name}:</span> {m.text}
+              </li>
+            ))}
+          </ul>
+          <div className="p2pcompose">
+            <input
+              placeholder={`Direct message to ${peer.name} (off-chain)…`}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && sendDirect()}
+            />
+            <button onClick={sendDirect} disabled={!input.trim()}>Send ⚡</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function statusLabel(s: P2pStatus): string {
+  switch (s) {
+    case 'idle': return 'not connected';
+    case 'calling': return 'calling… (offer sent)';
+    case 'ringing': return 'answering…';
+    case 'connecting': return 'connecting (ICE)…';
+    case 'connected': return '● connected (P2P)';
+    case 'failed': return 'failed';
+    case 'closed': return 'closed';
+  }
 }
 
 function short(a: string): string {
