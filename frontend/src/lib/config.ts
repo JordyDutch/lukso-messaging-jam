@@ -16,27 +16,26 @@ export const RPCS = [
 ] as const;
 
 /**
- * RegistryV2 address.
+ * RegistryV3 address — LIVE on LUKSO mainnet.
  *
- * `0xA5Be…2fcC` is the E2E-lab registry proven on mainnet (announce + invite).
- * It does NOT yet carry the SDP/ICE WebRTC fields this frontend needs — see
- * `frontend/contracts/RegistryV3.sol` and the README "needs on-chain deploy"
- * section. Once RegistryV3 is deployed, set VITE_REGISTRY_ADDRESS to its
- * address; until then the WebRTC signaling calls target this placeholder and
- * will revert against the lab contract (the app surfaces that honestly).
+ * Deployed 2026-10-21 at 0x01AC…088c (tx 0xf571567b…59cd5). Superset of the
+ * E2E-lab RegistryV2 `0xA5Be…2fcC` (announce + invite) plus the WebRTC
+ * SDP/ICE session-signaling fields this frontend needs (see
+ * `frontend/contracts/RegistryV3.sol`). Override via VITE_REGISTRY_ADDRESS
+ * for a different deploy (e.g. testnet).
  */
 export const REGISTRY_ADDRESS: string =
   (import.meta.env?.VITE_REGISTRY_ADDRESS as string | undefined) ??
-  '0xA5Beb9FF6F1977F0FF62ac13b074548dF7012fcC';
+  '0x01AC2FE086C2D69923F199d47C85688aB2FA088c';
 
 /**
- * True once a RegistryV3 (with SDP/ICE fields) address has been wired in via
- * env. When false the UI shows a "signaling contract not yet deployed" banner
- * instead of pretending the on-chain call paths are live.
+ * True once a RegistryV3 (with SDP/ICE fields) is wired in. The default
+ * address above IS a live RegistryV3, so this is true by default; it only
+ * goes false if someone overrides VITE_REGISTRY_ADDRESS with a non-V3
+ * contract AND sets VITE_REGISTRY_IS_V2=1 to say so.
  */
-export const REGISTRY_V3_DEPLOYED: boolean = Boolean(
-  import.meta.env?.VITE_REGISTRY_ADDRESS,
-);
+export const REGISTRY_V3_DEPLOYED: boolean =
+  (import.meta.env?.VITE_REGISTRY_IS_V2 as string | undefined) !== '1';
 
 /** Public STUN servers for ICE discovery. STUN carries no media, only reflexive-address discovery. */
 export const ICE_SERVERS: RTCIceServer[] = [
