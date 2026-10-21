@@ -37,11 +37,31 @@ export const REGISTRY_ADDRESS: string =
 export const REGISTRY_V3_DEPLOYED: boolean =
   (import.meta.env?.VITE_REGISTRY_IS_V2 as string | undefined) !== '1';
 
-/** Public STUN servers for ICE discovery. STUN carries no media, only reflexive-address discovery. */
+/**
+ * ICE servers for connectivity. STUN (reflexive-address discovery, no media)
+ * is always on. A TURN relay — needed for reliable connects between users on
+ * strict/different NATs — is OPTIONAL and added only when the build provides
+ * VITE_TURN_URL (plus optional username/credential). This keeps the site a
+ * pure static deploy: TURN, when set, is just another external endpoint like
+ * the RPC. Falls back to STUN-only when unset (works on friendly NATs / VPN).
+ */
+const TURN_URL = import.meta.env?.VITE_TURN_URL as string | undefined;
+const TURN_USER = import.meta.env?.VITE_TURN_USERNAME as string | undefined;
+const TURN_CRED = import.meta.env?.VITE_TURN_CREDENTIAL as string | undefined;
+
 export const ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
   { urls: 'stun:stun.cloudflare.com:3478' },
+  ...(TURN_URL
+    ? [
+        {
+          urls: TURN_URL,
+          ...(TURN_USER ? { username: TURN_USER } : {}),
+          ...(TURN_CRED ? { credential: TURN_CRED } : {}),
+        } as RTCIceServer,
+      ]
+    : []),
 ];
 
 /**

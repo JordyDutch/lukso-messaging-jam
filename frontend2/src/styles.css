@@ -162,3 +162,34 @@ section { margin-top: 20px; }
 }
 .tagged { color: #9aa4b2; }
 .tagged.tagme { color: #22c55e; font-weight: 600; }
+
+/* Discover directory (announced UPs) */
+.input {
+  width: 100%;
+  background: rgba(0,0,0,.15);
+  color: inherit;
+  border: 1px solid var(--line,#2a2a33);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font: inherit;
+}
+.btn {
+  background: rgba(80,120,255,.18);
+  color: inherit;
+  border: 1px solid var(--line,#2a2a33);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn:hover { background: rgba(80,120,255,.3); }
+.btn.small { font-size: .85rem; padding: 5px 10px; }
+.roster { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.rostercard {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  border: 1px solid var(--line,#2a2a33); border-radius: 10px; padding: 10px 12px;
+}
+.rosterid { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rostername { font-weight: 600; font-size: 1rem; }
+.rosterid .mono { overflow: hidden; text-overflow: ellipsis; }
