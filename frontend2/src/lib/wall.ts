@@ -510,6 +510,7 @@ export async function watchWall(
         // (thirdweb, mainnet.lukso.network) cap eth_getLogs at 1000 blocks per
         // request, so the inclusive window lo..hi must span at most 1000 blocks.
         const STEP = 1000;
+        const before = byId.size;
         for (let lo = from; lo <= to; lo += STEP) {
           const hi = Math.min(lo + STEP - 1, to);
           const [textLogs, blobLogs] = await Promise.all([
@@ -520,7 +521,14 @@ export async function watchWall(
           for (const l of blobLogs) ingestBlob(l);
         }
         from = to + 1;
-        emit();
+        // Only emit when the post set actually GREW. The window advances every
+        // tick (a new block is mined every few seconds on LUKSO), so emitting
+        // unconditionally handed the UI a fresh `raw` array ~every 5s even with
+        // no new posts — each change re-ran decodePosts, whose cleanup cancelled
+        // the in-flight pass before it finished. A full feed decode (one beacon
+        // fetch per blob) takes longer than the poll interval, so it NEVER
+        // completed → the wall stayed blank. Emit on growth only. (Fix 2026-10-22.)
+        if (byId.size > before) emit();
       }
     } catch (e) {
       // transient RPC hiccup — retry next tick, keep window. Surface it so a
