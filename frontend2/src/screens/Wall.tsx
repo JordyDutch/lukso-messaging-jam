@@ -40,6 +40,7 @@ import {
   type Conversation,
 } from '../lib/conversations';
 import { EXPLORER, ipfsToHttp, BLOBS_ENABLED } from '../lib/config';
+import { SignProgress, type SignPhase } from './SignProgress';
 import { ethers } from 'ethers';
 import {
   P2pDriver,
@@ -527,6 +528,7 @@ export function Wall() {
             />
           ) : (
             <DmPane
+              key={view.address.toLowerCase()}
               up={up}
               peer={view}
               thread={dmThread}
@@ -770,39 +772,6 @@ function Body({ p }: { p: WallPost }) {
   return <>{p.text}</>;
 }
 
-/** SignPanel — SIGNATURE TEST readout (what the UP extension did when signing). */
-function SignPanel({ outcome }: { outcome: SignOutcome | null }) {
-  if (!outcome) return null;
-  const row = (k: string, v: string) => (
-    <div style={{ display: 'flex', gap: 6, fontFamily: 'monospace', fontSize: 12, wordBreak: 'break-all' }}>
-      <span className="muted" style={{ minWidth: 92, flexShrink: 0 }}>{k}</span>
-      <span>{v}</span>
-    </div>
-  );
-  return (
-    <div
-      className="small"
-      style={{
-        marginTop: 8, padding: 10, borderRadius: 8,
-        border: `1px solid ${outcome.ok ? '#2e7d32' : '#b23'}`,
-        background: outcome.ok ? 'rgba(46,125,50,0.08)' : 'rgba(178,51,51,0.08)',
-      }}
-    >
-      <div style={{ fontWeight: 600, marginBottom: 6 }}>
-        {outcome.ok ? '✅ extension signed the LSP25 digest' : '❌ extension did not sign'}
-      </div>
-      {row('method', outcome.method)}
-      {row('signer', outcome.signer)}
-      {row('keyManager', outcome.keyManager)}
-      {row('nonce', outcome.nonce)}
-      {row('digest', outcome.digest)}
-      {outcome.signature && row('signature', outcome.signature)}
-      {outcome.recovered && row('recovered', outcome.recovered)}
-      {outcome.error && row('note', outcome.error)}
-    </div>
-  );
-}
-
 type UpState = ReturnType<typeof useApp>['state']['up'];
 
 /**
@@ -1022,7 +991,9 @@ function Composer({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [sig, setSig] = useState<SignOutcome | null>(null);
+  const [phase, setPhase] = useState<SignPhase>('idle');
   const deb = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const doneTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { transport } = useTransport();
 
   function onTag(v: string) {
@@ -1048,10 +1019,22 @@ function Composer({
     setBusy(true);
     setErr(null);
     setSig(null);
+    if (doneTimer.current) clearTimeout(doneTimer.current);
+    // Blob posts narrate their phases via the dawg spinner; plain text lands
+    // fast enough that a spinner would just flicker.
+    const blob = transport === 'blob';
+    setPhase(blob ? 'signing' : 'idle');
     try {
       const opts = { tag: tag?.address ?? null, kind: kind ?? 'post', parent } as const;
-      if (transport === 'blob') {
-        await postPublicBlob(up!.signer, text.trim(), opts, { ...relay, onSign: setSig });
+      if (blob) {
+        await postPublicBlob(up!.signer, text.trim(), opts, {
+          ...relay,
+          // onSign fires the instant the extension signs — now we're just
+          // waiting on the relayer + mining.
+          onSign: (o) => { setSig(o); if (o.ok) setPhase('relaying'); },
+        });
+        setPhase('done');
+        doneTimer.current = setTimeout(() => setPhase('idle'), 4000);
       } else {
         await postPublic(up!.signer, text.trim(), opts);
       }
@@ -1061,6 +1044,7 @@ function Composer({
       setHits([]);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
+      setPhase(blob ? 'error' : 'idle');
     } finally {
       setBusy(false);
     }
@@ -1115,8 +1099,8 @@ function Composer({
           {busy ? 'Posting…' : cta}
         </button>
       </div>
-      {err && <p className="error small">{err}</p>}
-      <SignPanel outcome={sig} />
+      {err && phase === 'idle' && <p className="error small">{err}</p>}
+      <SignProgress phase={phase} outcome={sig} error={err} />
     </div>
   );
 }
@@ -1483,6 +1467,8 @@ function DmPane({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [sig, setSig] = useState<SignOutcome | null>(null);
+  const [phase, setPhase] = useState<SignPhase>('idle');
+  const doneTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Per-message privacy: true = sealed (end-to-end, as before); false = an
   // unencrypted DM, a PUBLIC post tagged to the peer + carrying the DM threadId.
   // Unencrypted needs no key handshake, so it's allowed even when `ready` is false.
@@ -1498,6 +1484,10 @@ function DmPane({
     setBusy(true);
     setErr(null);
     setSig(null);
+    if (doneTimer.current) clearTimeout(doneTimer.current);
+    const blob = transport === 'blob';
+    setPhase(blob ? 'signing' : 'idle');
+    const onSign = (o: SignOutcome) => { setSig(o); if (o.ok) setPhase('relaying'); };
     try {
       if (encrypt) {
         const dmArgs = {
@@ -1507,7 +1497,7 @@ function DmPane({
           peerAddr: peer.address,
           text: text.trim(),
         };
-        if (transport === 'blob') await postDmBlob({ ...dmArgs, relay: { ...relay, onSign: setSig } });
+        if (blob) await postDmBlob({ ...dmArgs, relay: { ...relay, onSign } });
         else await postDm(dmArgs);
       } else {
         // Unencrypted DM: a public post, tagged at the peer, carrying the DM
@@ -1516,13 +1506,18 @@ function DmPane({
           tag: peer.address,
           threadId: threadIdFor(up!.address, peer.address),
         };
-        if (transport === 'blob')
-          await postPublicBlob(up!.signer, text.trim(), opts, { ...relay, onSign: setSig });
+        if (blob)
+          await postPublicBlob(up!.signer, text.trim(), opts, { ...relay, onSign });
         else await postPublic(up!.signer, text.trim(), opts);
       }
       setText('');
+      if (blob) {
+        setPhase('done');
+        doneTimer.current = setTimeout(() => setPhase('idle'), 4000);
+      }
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
+      setPhase(blob ? 'error' : 'idle');
     } finally {
       setBusy(false);
     }
@@ -1599,8 +1594,8 @@ function DmPane({
         <button disabled={!canSend || busy || !text.trim()} onClick={send}>
           {busy ? (encrypt ? 'Sealing…' : 'Posting…') : encrypt ? '🔒 Send' : '🌐 Send'}
         </button>
-        {err && <p className="error">{err}</p>}
-        <SignPanel outcome={sig} />
+        {err && phase === 'idle' && <p className="error">{err}</p>}
+        <SignProgress phase={phase} outcome={sig} error={err} />
       </div>
     </>
   );
