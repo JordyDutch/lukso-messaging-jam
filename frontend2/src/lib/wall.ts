@@ -383,7 +383,6 @@ async function decodeOne(
       if (!got.ok || !got.payload) {
         // Cache a definitive pruned/mismatch as null; do NOT cache a transient
         // 'error' (let it retry next pass).
-        console.warn(`[wall-read] id=${p.id} blob body unavailable:`, got.reason, got.error ?? '');
         if (got.reason === 'pruned' || got.reason === 'mismatch') {
           blobBodyCache.set(p.id, null);
           persistBodies();
@@ -393,7 +392,6 @@ async function decodeOne(
       payload = got.payload;
       blobBodyCache.set(p.id, payload);
       persistBodies();
-      console.info(`[wall-read] id=${p.id} blob body recovered (${payload.length}B)`);
     }
     if (!payload) return { ...p, pruned: true };
     p = { ...p, bodyRaw: ethers.hexlify(payload) };
@@ -559,9 +557,6 @@ export async function watchWall(
 
   const emit = () => {
     const all = [...byId.values()].sort((x, y) => x.id - y.id);
-    // Diagnostic: how many raw posts the poller sees (text + blob). If this is
-    // nonzero but the wall is blank, the loss is in decode/display, not fetch.
-    console.info(`[wall-read] poller has ${all.length} posts (ids ${all.map((p) => p.id).join(',') || '—'})`);
     onPosts(all);
   };
 

@@ -159,11 +159,7 @@ export function Wall() {
         return next;
       });
     decodePosts(raw, { addr: up.address, convPriv }, upsert)
-      .then((d) => {
-        const pub = d.filter((x) => !x.encrypted).length;
-        console.info(`[wall-read] decodePosts DONE: ${d.length} decoded, ${pub} public`);
-      })
-      .catch((e) => console.error('[wall-read] decodePosts THREW:', e));
+      .catch((e) => console.error('[wall] decodePosts failed:', e));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [raw, up.address]);
 
@@ -182,11 +178,10 @@ export function Wall() {
   const meLc = up.address.toLowerCase();
 
   // Public feed, ordered NEWEST → OLDEST (highest id first) for display.
-  const publicFeed = useMemo(() => {
-    const f = decoded.filter((p) => !p.encrypted).sort((a, b) => b.id - a.id);
-    console.info(`[wall-read] publicFeed render: decoded=${decoded.length} public=${f.length}`);
-    return f;
-  }, [decoded]);
+  const publicFeed = useMemo(
+    () => decoded.filter((p) => !p.encrypted).sort((a, b) => b.id - a.id),
+    [decoded],
+  );
 
   // Snapshot the public feed so the next visit renders instantly from cache.
   // Only persist public posts (never decrypted DM text), and only when there is
