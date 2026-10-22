@@ -78,6 +78,30 @@ export const ENVIO_GRAPHQL =
 export const EXPLORER = 'https://explorer.lukso.network';
 
 /**
+ * IPFS HTTP gateway for rendering LSP3 profile images. Envio returns image URLs
+ * that are usually `ipfs://<cid>/<path>` (occasionally already https). The
+ * LUKSO-run gateway at api.universalprofile.cloud is CORS-open for images and
+ * serves the same content as the UP cloud. Override via VITE_IPFS_GATEWAY.
+ */
+export const IPFS_GATEWAY: string =
+  (import.meta.env?.VITE_IPFS_GATEWAY as string | undefined) ??
+  'https://api.universalprofile.cloud/ipfs/';
+
+/**
+ * Turn an LSP3 image URL into something an <img src> can load: `ipfs://CID/x`
+ * → `${IPFS_GATEWAY}CID/x`; http(s) and data URLs pass through untouched.
+ * Returns null for empty/unusable input.
+ */
+export function ipfsToHttp(url: string | null | undefined): string | null {
+  if (!url) return null;
+  if (url.startsWith('ipfs://')) {
+    return IPFS_GATEWAY.replace(/\/$/, '/') + url.slice('ipfs://'.length);
+  }
+  if (/^(https?:|data:)/.test(url)) return url;
+  return null;
+}
+
+/**
  * LUKSO beacon (consensus) API — serves EIP-4844 blob sidecars so a reader can
  * recover a blob body by slot: `/eth/v1/beacon/blob_sidecars/{slot}`. Proven
  * live 2026-10-22 (recovered the spike blob by a third party and verified

@@ -68,16 +68,73 @@ interface EnvioRow {
   profile?: { profileImages?: { url: string | null }[] } | null;
 }
 
+// BY_ID also pulls the first profile image (same nested `profile` relation as
+// QUERY — a top-level `profileImages` fails GRAPHQL_VALIDATION). One round-trip
+// resolves BOTH the @name and the avatar, so the feed can show real pictures
+// everywhere (not just in search results) off a single per-address cache.
 const BY_ID = `
   query ById($id: String!) {
     LSP3ProfileMetadata_by_pk: search_profiles_v2(args: { search_query: $id, limit_count: 1 }) {
       id
       name
+      profile { profileImages(limit: 1) { url } }
     }
   }
 `;
 
-const nameCache = new Map<string, string | null>();
+export interface ProfileInfo {
+  name: string | null;
+  avatar: string | null;
+}
+
+const profileCache = new Map<string, ProfileInfo>();
+const inflight = new Map<string, Promise<ProfileInfo>>();
+
+/**
+ * Reverse-resolve a UP address to its LSP3 name + avatar URL, cached per session
+ * and de-duplicated across concurrent callers (the feed renders many cards for
+ * the same author). Returns `{name:null,avatar:null}` if the profile has no
+ * metadata or the indexer can't be reached — the UI falls back to a short
+ * address and a generated monogram in that case.
+ */
+export async function profileOf(address: string): Promise<ProfileInfo> {
+  const empty: ProfileInfo = { name: null, avatar: null };
+  if (!ethers.isAddress(address)) return empty;
+  const key = ethers.getAddress(address);
+  const cached = profileCache.get(key);
+  if (cached !== undefined) return cached;
+  const pending = inflight.get(key);
+  if (pending) return pending;
+
+  const run = (async (): Promise<ProfileInfo> => {
+    try {
+      const res = await fetch(ENVIO_GRAPHQL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ query: BY_ID, variables: { id: key } }),
+      });
+      if (!res.ok) throw new Error(`envio ${res.status}`);
+      const json = (await res.json()) as {
+        data?: { LSP3ProfileMetadata_by_pk?: EnvioRow[] };
+      };
+      const rows = json.data?.LSP3ProfileMetadata_by_pk ?? [];
+      const hit = rows.find((r) => ethers.isAddress(r.id) && ethers.getAddress(r.id) === key);
+      const info: ProfileInfo = {
+        name: hit?.name ?? null,
+        avatar: hit?.profile?.profileImages?.[0]?.url ?? null,
+      };
+      profileCache.set(key, info);
+      return info;
+    } catch {
+      profileCache.set(key, empty);
+      return empty;
+    } finally {
+      inflight.delete(key);
+    }
+  })();
+  inflight.set(key, run);
+  return run;
+}
 
 /**
  * Reverse-resolve a UP address to its @name (LSP3), cached per session.
@@ -85,29 +142,7 @@ const nameCache = new Map<string, string | null>();
  * UI falls back to a short address in that case.
  */
 export async function nameOf(address: string): Promise<string | null> {
-  if (!ethers.isAddress(address)) return null;
-  const key = ethers.getAddress(address);
-  const cached = nameCache.get(key);
-  if (cached !== undefined) return cached;
-  try {
-    const res = await fetch(ENVIO_GRAPHQL, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ query: BY_ID, variables: { id: key } }),
-    });
-    if (!res.ok) throw new Error(`envio ${res.status}`);
-    const json = (await res.json()) as {
-      data?: { LSP3ProfileMetadata_by_pk?: EnvioRow[] };
-    };
-    const rows = json.data?.LSP3ProfileMetadata_by_pk ?? [];
-    const hit = rows.find((r) => ethers.isAddress(r.id) && ethers.getAddress(r.id) === key);
-    const name = hit?.name ?? null;
-    nameCache.set(key, name);
-    return name;
-  } catch {
-    nameCache.set(key, null);
-    return null;
-  }
+  return (await profileOf(address)).name;
 }
 
 export async function resolveName(input: string): Promise<ProfileHit[]> {
@@ -135,9 +170,15 @@ export async function resolveName(input: string): Promise<ProfileHit[]> {
   const rows = json.data?.search_profiles_v2 ?? [];
   return rows
     .filter((r) => ethers.isAddress(r.id))
-    .map((r) => ({
-      address: ethers.getAddress(r.id),
-      name: r.name,
-      avatar: r.profile?.profileImages?.[0]?.url ?? null,
-    }));
+    .map((r) => {
+      const hit: ProfileHit = {
+        address: ethers.getAddress(r.id),
+        name: r.name,
+        avatar: r.profile?.profileImages?.[0]?.url ?? null,
+      };
+      // Warm the per-address cache so the feed reuses the avatar we just fetched
+      // instead of firing a second BY_ID round-trip for the same profile.
+      profileCache.set(hit.address, { name: hit.name, avatar: hit.avatar });
+      return hit;
+    });
 }

@@ -31,7 +31,7 @@ import {
 import { useTransport } from '../lib/transport';
 import { convPubOf } from '../lib/registry';
 import { threadIdFor } from '../lib/crypto';
-import { resolveName, nameOf, upLabel, type ProfileHit } from '../lib/names';
+import { resolveName, nameOf, profileOf, upLabel, type ProfileHit } from '../lib/names';
 import { watchRoster, type RosterEntry } from '../lib/roster';
 import {
   loadConversations,
@@ -39,7 +39,7 @@ import {
   mergeConversations,
   type Conversation,
 } from '../lib/conversations';
-import { EXPLORER } from '../lib/config';
+import { EXPLORER, ipfsToHttp } from '../lib/config';
 import { ethers } from 'ethers';
 import {
   P2pDriver,
@@ -54,6 +54,7 @@ type View =
   | { kind: 'thread'; rootId: number }
   | { kind: 'mentions' }
   | { kind: 'people' }
+  | { kind: 'profile'; address: string }
   | { kind: 'dm'; name: string; address: string };
 
 const ZERO = '0x0000000000000000000000000000000000000000';
@@ -91,28 +92,56 @@ function UpDogLogo({ size = 28 }: { size?: number }) {
 }
 
 /**
- * useName — reverse-resolve a UP address to its human-readable `name#HASH`
- * label (cached in names.ts). Returns '' for the zero address.
+ * useProfile — reverse-resolve a UP address to its { name, avatar } (cached +
+ * de-duped in names.ts). `avatar` is already gateway-resolved to an http(s)
+ * URL an <img> can load (ipfs:// → gateway), or null. Skips the zero address.
  */
-function useName(address: string | null | undefined): string {
-  const [name, setName] = useState<string | null>(null);
+function useProfile(address: string | null | undefined): { name: string | null; avatar: string | null } {
+  const [info, setInfo] = useState<{ name: string | null; avatar: string | null }>({ name: null, avatar: null });
   useEffect(() => {
     let live = true;
-    setName(null);
+    setInfo({ name: null, avatar: null });
     if (address && address !== ZERO) {
-      nameOf(address).then((n) => live && setName(n)).catch(() => {});
+      profileOf(address)
+        .then((p) => live && setInfo({ name: p.name, avatar: ipfsToHttp(p.avatar) }))
+        .catch(() => {});
     }
     return () => {
       live = false;
     };
   }, [address]);
+  return info;
+}
+
+/**
+ * useName — reverse-resolve a UP address to its human-readable `name#HASH`
+ * label. Returns '' for the zero address.
+ */
+function useName(address: string | null | undefined): string {
+  const { name } = useProfile(address);
   if (!address || address === ZERO) return '';
   return upLabel(address, name);
 }
 
-/** Address label that resolves to @name, falling back to a linked short address. */
-function Who({ address }: { address: string }) {
+/**
+ * Address label that resolves to @name. When `onProfile` is given it renders a
+ * button that opens the in-app profile view; otherwise it links out to the
+ * explorer. Falls back to a short address while the name resolves.
+ */
+function Who({ address, onProfile }: { address: string; onProfile?: (address: string) => void }) {
   const label = useName(address);
+  if (onProfile) {
+    return (
+      <button
+        type="button"
+        className="wholink"
+        onClick={(e) => { e.stopPropagation(); onProfile(address); }}
+        title="View this profile on the wall"
+      >
+        {label || short(address)}
+      </button>
+    );
+  }
   return (
     <a className="mono" href={`${EXPLORER}/address/${address}`} target="_blank" rel="noreferrer">
       {label || short(address)}
@@ -120,16 +149,61 @@ function Who({ address }: { address: string }) {
   );
 }
 
-/** A circular avatar showing the first letter of the resolved name / address. */
-function Avatar({ address, label }: { address: string; label?: string }) {
-  const resolved = useName(address);
-  const text = (label || resolved || address).replace(/^@/, '');
+/**
+ * Avatar — the real LSP3 profile picture when the indexer has one, else a
+ * deterministic monogram (first letter + stable hue from the address). When
+ * `onClick` is set the avatar becomes a button that opens the profile view.
+ */
+function Avatar({
+  address,
+  label,
+  onClick,
+  size,
+}: {
+  address: string;
+  label?: string;
+  onClick?: (address: string) => void;
+  size?: number;
+}) {
+  const { name, avatar } = useProfile(address);
+  const [broken, setBroken] = useState(false);
+  useEffect(() => setBroken(false), [avatar]);
+
+  const text = (label || name || address).replace(/^@/, '');
   const ch = text.trim()[0]?.toUpperCase() ?? '?';
-  // deterministic hue from the address so each peer has a stable colour
   const hue = parseInt(address.slice(2, 8), 16) % 360;
+  const dim = size ? { width: size, height: size, fontSize: Math.round(size * 0.42) } : undefined;
+  const showImg = avatar && !broken;
+
+  const inner = showImg ? (
+    <img
+      className="avatarimg"
+      src={avatar}
+      alt=""
+      loading="lazy"
+      onError={() => setBroken(true)}
+    />
+  ) : (
+    ch
+  );
+  const style = showImg ? dim : { background: `hsl(${hue} 55% 42%)`, ...dim };
+
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        className="avatar avatarbtn"
+        style={style}
+        onClick={(e) => { e.stopPropagation(); onClick(address); }}
+        title="View this profile on the wall"
+      >
+        {inner}
+      </button>
+    );
+  }
   return (
-    <span className="avatar" style={{ background: `hsl(${hue} 55% 42%)` }}>
-      {ch}
+    <span className="avatar" style={style}>
+      {inner}
     </span>
   );
 }
@@ -293,6 +367,30 @@ export function Wall() {
   /** Open the focused thread view for a post. */
   const openThread = (rootId: number) => openSection({ kind: 'thread', rootId });
 
+  /** Open the profile view for a UP (their posts + mentions of them). */
+  const openProfile = (address: string) => openSection({ kind: 'profile', address });
+
+  // Posts + reposts authored BY the focused profile (newest-first, roots + reposts
+  // but not bare replies — same shape as the main timeline), plus every public
+  // post that @mentions them. Derived only when a profile view is open.
+  const profileAddr = view.kind === 'profile' ? view.address.toLowerCase() : null;
+  const profilePosts = useMemo(
+    () =>
+      profileAddr
+        ? timeline.filter((p) => p.from.toLowerCase() === profileAddr)
+        : [],
+    [timeline, profileAddr],
+  );
+  const profileMentions = useMemo(
+    () =>
+      profileAddr
+        ? publicFeed.filter(
+            (p) => p.tag.toLowerCase() === profileAddr && p.from.toLowerCase() !== profileAddr,
+          )
+        : [],
+    [publicFeed, profileAddr],
+  );
+
   const selectedDm = view.kind === 'dm' ? view.address.toLowerCase() : null;
 
   return (
@@ -368,6 +466,9 @@ export function Wall() {
         ) : view.kind === 'people' ? (
           <SectionHeader title="🌐 Discover" subtitle="Universal Profiles that announced an encryption key"
             onBack={() => setMobilePane('list')} />
+        ) : view.kind === 'profile' ? (
+          <SectionHeader title="👤 Profile" subtitle="This profile's posts and mentions"
+            onBack={() => openSection({ kind: 'public' })} />
         ) : (
           <ChatHeader peer={view} connected={false} onBack={() => setMobilePane('list')} />
         )}
@@ -382,6 +483,7 @@ export function Wall() {
               replyCountOf={replyCountOf}
               relay={relay}
               openThread={openThread}
+              openProfile={openProfile}
             />
           ) : view.kind === 'thread' ? (
             <ThreadPane
@@ -393,11 +495,25 @@ export function Wall() {
               replyCountOf={replyCountOf}
               relay={relay}
               openThread={openThread}
+              openProfile={openProfile}
             />
           ) : view.kind === 'mentions' ? (
-            <MentionsPane me={meLc} feed={mentions} openThread={openThread} />
+            <MentionsPane me={meLc} feed={mentions} openThread={openThread} openProfile={openProfile} />
           ) : view.kind === 'people' ? (
             <DiscoverPane me={meLc} roster={roster} openDm={openDm} />
+          ) : view.kind === 'profile' ? (
+            <ProfilePane
+              me={meLc}
+              address={view.address}
+              posts={profilePosts}
+              mentions={profileMentions}
+              byId={byId}
+              replyCountOf={replyCountOf}
+              openThread={openThread}
+              openProfile={openProfile}
+              openDm={openDm}
+              isMe={profileAddr === meLc}
+            />
           ) : (
             <DmPane
               up={up}
@@ -671,6 +787,7 @@ function PublicPane({
   replyCountOf,
   relay,
   openThread,
+  openProfile,
 }: {
   me: string;
   up: UpState;
@@ -679,6 +796,7 @@ function PublicPane({
   replyCountOf: Map<number, number>;
   relay: RelayCtx;
   openThread: (id: number) => void;
+  openProfile: (address: string) => void;
 }) {
   // Optimistic "reposted by me" set so the 🔁 fills instantly (chain confirms later).
   const [reposted, setReposted] = useState<Set<number>>(new Set());
@@ -722,6 +840,7 @@ function PublicPane({
             onOpenThread={() => openThread(p.id)}
             onReply={() => openThread(p.id)}
             onRepost={() => repost(p)}
+            openProfile={openProfile}
           />
         ))}
       </ul>
@@ -743,6 +862,7 @@ function FeedItem({
   onOpenThread,
   onReply,
   onRepost,
+  openProfile,
 }: {
   post: WallPost;
   me: string;
@@ -752,16 +872,17 @@ function FeedItem({
   onOpenThread: () => void;
   onReply: () => void;
   onRepost: () => void;
+  openProfile?: (address: string) => void;
 }) {
   if (post.kind === 'repost') {
     const original = typeof post.parentId === 'number' ? byId.get(post.parentId) : undefined;
     return (
       <li className="feeditem">
-        <div className="repostbanner small muted">🔁 <Who address={post.from} /> reposted · {fmtShort(post.timestamp)}</div>
+        <div className="repostbanner small muted">🔁 <Who address={post.from} onProfile={openProfile} /> reposted · {fmtShort(post.timestamp)}</div>
         {original ? (
           <PostCard post={original} me={me} replies={replies} reposted={reposted}
             onOpenThread={onOpenThread} onReply={onReply} onRepost={onRepost}
-            onFocusClick={onOpenThread} embedded />
+            onFocusClick={onOpenThread} openProfile={openProfile} embedded />
         ) : (
           <div className="post ghost small muted">🫧 original post unavailable (body expired or not yet loaded)</div>
         )}
@@ -772,7 +893,7 @@ function FeedItem({
     <li className="feeditem">
       <PostCard post={post} me={me} replies={replies} reposted={reposted}
         onOpenThread={onOpenThread} onReply={onReply} onRepost={onRepost}
-        onFocusClick={onOpenThread} />
+        onFocusClick={onOpenThread} openProfile={openProfile} />
     </li>
   );
 }
@@ -793,6 +914,7 @@ function PostCard({
   embedded,
   dim,
   onFocusClick,
+  openProfile,
 }: {
   post: WallPost;
   me: string;
@@ -805,6 +927,8 @@ function PostCard({
   dim?: boolean;
   /** click the card BODY (not the action bar) to focus this post in a thread. */
   onFocusClick?: () => void;
+  /** open the profile view for an author / tagged UP. */
+  openProfile?: (address: string) => void;
 }) {
   const mine = post.from.toLowerCase() === me;
   const cls = ['post', mine ? 'mine' : '', embedded ? 'embedded' : '', dim ? 'dim' : '',
@@ -812,12 +936,12 @@ function PostCard({
   return (
     <article className={cls}>
       <div className="postmain" onClick={onFocusClick} role={onFocusClick ? 'button' : undefined}>
-        <Avatar address={post.from} />
+        <Avatar address={post.from} onClick={openProfile} />
         <div className="postcol">
           <div className="posthead">
-            <span className="postwho"><Who address={post.from} /></span>
+            <span className="postwho"><Who address={post.from} onProfile={openProfile} /></span>
             {post.tag !== ZERO && (
-              <span className={post.tag.toLowerCase() === me ? 'tagged tagme' : 'tagged'}>→ <Tag address={post.tag} /></span>
+              <span className={post.tag.toLowerCase() === me ? 'tagged tagme' : 'tagged'}>→ <Tag address={post.tag} onProfile={openProfile} /></span>
             )}
             <span className="ts" title={fmt(post.timestamp)}>{fmtShort(post.timestamp)}</span>
             <LaneBadge p={post} />
@@ -974,6 +1098,7 @@ function ThreadPane({
   replyCountOf,
   relay,
   openThread,
+  openProfile,
 }: {
   me: string;
   up: UpState;
@@ -983,6 +1108,7 @@ function ThreadPane({
   replyCountOf: Map<number, number>;
   relay: RelayCtx;
   openThread: (id: number) => void;
+  openProfile: (address: string) => void;
 }) {
   const focused = byId.get(rootId);
 
@@ -1021,13 +1147,13 @@ function ThreadPane({
           <li className="feeditem ancestor" key={a.id}>
             <PostCard post={a} me={me} replies={replyCountOf.get(a.id) ?? 0} reposted={false}
               onOpenThread={() => openThread(a.id)} onReply={() => openThread(a.id)} onRepost={() => {}}
-              onFocusClick={() => openThread(a.id)} embedded dim />
+              onFocusClick={() => openThread(a.id)} openProfile={openProfile} embedded dim />
           </li>
         ))}
 
         <li className="feeditem focused" key={focused.id}>
           <PostCard post={focused} me={me} replies={replyCountOf.get(focused.id) ?? 0} reposted={false}
-            onOpenThread={() => {}} onReply={() => {}} onRepost={() => {}} />
+            onOpenThread={() => {}} onReply={() => {}} onRepost={() => {}} openProfile={openProfile} />
         </li>
 
         <li className="convsection small muted">
@@ -1038,7 +1164,7 @@ function ThreadPane({
           <li className="feeditem reply" key={d.id}>
             <PostCard post={d} me={me} replies={replyCountOf.get(d.id) ?? 0} reposted={false}
               onOpenThread={() => openThread(d.id)} onReply={() => openThread(d.id)} onRepost={() => {}}
-              onFocusClick={() => openThread(d.id)} embedded />
+              onFocusClick={() => openThread(d.id)} openProfile={openProfile} embedded />
           </li>
         ))}
       </ul>
@@ -1055,14 +1181,21 @@ function ThreadPane({
   );
 }
 
-/** Inline @tag label that resolves to @name. */
-function Tag({ address }: { address: string }) {
+/** Inline @tag label that resolves to @name; opens the profile when clickable. */
+function Tag({ address, onProfile }: { address: string; onProfile?: (address: string) => void }) {
   const label = useName(address);
-  return <>{label || short(address)}</>;
+  const text = label || short(address);
+  if (onProfile) {
+    return (
+      <button type="button" className="wholink" onClick={(e) => { e.stopPropagation(); onProfile(address); }}
+        title="View this profile on the wall">{text}</button>
+    );
+  }
+  return <>{text}</>;
 }
 
 /** MentionsPane — every public post that @tags the connected UP, newest first. */
-function MentionsPane({ me, feed, openThread }: { me: string; feed: WallPost[]; openThread: (id: number) => void }) {
+function MentionsPane({ me, feed, openThread, openProfile }: { me: string; feed: WallPost[]; openThread: (id: number) => void; openProfile: (address: string) => void }) {
   return (
     <ul className="feed">
       {feed.length === 0 && (
@@ -1072,10 +1205,107 @@ function MentionsPane({ me, feed, openThread }: { me: string; feed: WallPost[]; 
         <li key={p.id} className="feeditem">
           <PostCard post={p} me={me} replies={0} reposted={false}
             onOpenThread={() => openThread(p.id)} onReply={() => openThread(p.id)} onRepost={() => {}}
-            onFocusClick={() => openThread(p.id)} />
+            onFocusClick={() => openThread(p.id)} openProfile={openProfile} />
         </li>
       ))}
     </ul>
+  );
+}
+
+/**
+ * ProfilePane — a focused view of one UP: a header (big avatar, @name, address,
+ * explorer + DM links) and the wall FILTERED to that person — a Posts tab (their
+ * posts + reposts) and a Mentions tab (public posts that @tagged them). Opened by
+ * clicking any avatar / name / @tag anywhere in the feed.
+ */
+function ProfilePane({
+  me,
+  address,
+  posts,
+  mentions,
+  byId,
+  replyCountOf,
+  openThread,
+  openProfile,
+  openDm,
+  isMe,
+}: {
+  me: string;
+  address: string;
+  posts: WallPost[];
+  mentions: WallPost[];
+  byId: Map<number, WallPost>;
+  replyCountOf: Map<number, number>;
+  openThread: (id: number) => void;
+  openProfile: (address: string) => void;
+  openDm: (name: string, address: string) => void;
+  isMe: boolean;
+}) {
+  const { name } = useProfile(address);
+  const [tab, setTab] = useState<'posts' | 'mentions'>('posts');
+  const label = upLabel(address, name);
+  const dmName = name ?? short(address);
+  const feed = tab === 'posts' ? posts : mentions;
+
+  return (
+    <>
+      <div className="profilehead">
+        <Avatar address={address} size={72} />
+        <div className="profileid">
+          <div className="profilename">{label}</div>
+          <a className="mono small muted" href={`${EXPLORER}/address/${address}`} target="_blank" rel="noreferrer">
+            {short(address)} ↗
+          </a>
+          <div className="profilestats small muted">
+            {posts.length} {posts.length === 1 ? 'post' : 'posts'} · {mentions.length} {mentions.length === 1 ? 'mention' : 'mentions'} on the wall
+          </div>
+        </div>
+        {!isMe && (
+          <button className="btn small" onClick={() => openDm(dmName, address)}>🔒 Message</button>
+        )}
+      </div>
+
+      <nav className="sectiontabs profiletabs">
+        <button className={tab === 'posts' ? 'stab active' : 'stab'} onClick={() => setTab('posts')}>
+          🧱 Posts{posts.length > 0 && <span className="badge">{posts.length}</span>}
+        </button>
+        <button className={tab === 'mentions' ? 'stab active' : 'stab'} onClick={() => setTab('mentions')}>
+          @ Mentions{mentions.length > 0 && <span className="badge">{mentions.length}</span>}
+        </button>
+      </nav>
+
+      <ul className="feed">
+        {feed.length === 0 && (
+          <li className="muted empty">
+            {tab === 'posts'
+              ? 'No posts from this profile on the wall yet.'
+              : 'No one has mentioned this profile on the wall yet.'}
+          </li>
+        )}
+        {feed.map((p) =>
+          tab === 'posts' ? (
+            <FeedItem
+              key={p.id}
+              post={p}
+              me={me}
+              byId={byId}
+              replies={replyCountOf.get(p.id) ?? 0}
+              reposted={false}
+              onOpenThread={() => openThread(p.id)}
+              onReply={() => openThread(p.id)}
+              onRepost={() => {}}
+              openProfile={openProfile}
+            />
+          ) : (
+            <li key={p.id} className="feeditem">
+              <PostCard post={p} me={me} replies={replyCountOf.get(p.id) ?? 0} reposted={false}
+                onOpenThread={() => openThread(p.id)} onReply={() => openThread(p.id)} onRepost={() => {}}
+                onFocusClick={() => openThread(p.id)} openProfile={openProfile} />
+            </li>
+          ),
+        )}
+      </ul>
+    </>
   );
 }
 
