@@ -8,11 +8,14 @@ export const CHAIN_ID = 42;
 
 /**
  * RPC endpoints, tried in order (first that answers chainId 42 wins).
- * Per FRONTEND-PLAN.md: thirdweb primary, lukso.network fallback.
+ * lukso.network is primary: it sends `access-control-allow-origin: *` AND isn't
+ * rate-limited for browser origins. thirdweb (kept as fallback) 429s hard from a
+ * GitHub Pages origin — it was blocking the feed/roster reads (CORS+429), see
+ * the 2026-10-22 Pages console. Override via VITE_RPCS if needed.
  */
 export const RPCS = [
-  'https://42.rpc.thirdweb.com',
   'https://rpc.mainnet.lukso.network',
+  'https://42.rpc.thirdweb.com',
 ] as const;
 
 /**
@@ -82,6 +85,13 @@ export const EXPLORER = 'https://explorer.lukso.network';
  * pruned after ~18 days, so this is the retrieval path for the blob lane; an
  * older blob returns 404 (body gone, hash still on-chain). Override with
  * VITE_BEACON_URL. Note: the public EL host also answers the beacon API.
+ *
+ * BROWSER CORS CAVEAT (2026-10-22): the public LUKSO beacon endpoint answers
+ * 200 but sends NO `access-control-allow-origin` header, so a browser blocks it
+ * (confirmed from the GitHub Pages origin). Blob-BODY recovery for display
+ * therefore needs a CORS-enabled beacon/blob node (a blobscan-style API or a
+ * small CORS proxy) — set VITE_BEACON_URL to that. POSTING a blob and the LSP25
+ * signature test do NOT use the beacon, so they work regardless.
  */
 export const BEACON_URL: string =
   (import.meta.env?.VITE_BEACON_URL as string | undefined) ??

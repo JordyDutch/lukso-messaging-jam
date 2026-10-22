@@ -165,7 +165,14 @@ async function beaconGenesisTime(): Promise<number> {
   if (!genesisTimePromise) {
     genesisTimePromise = fetch(`${BEACON_URL}/eth/v1/beacon/genesis`)
       .then((r) => r.json())
-      .then((j) => Number(j.data.genesis_time));
+      .then((j) => Number(j.data.genesis_time))
+      // Don't cache a rejection — the public LUKSO beacon sends no CORS header
+      // to a browser origin (see config BEACON_URL note); if it's swapped for a
+      // reachable one at runtime, the next decode should retry, not stay poisoned.
+      .catch((e) => {
+        genesisTimePromise = null;
+        throw e;
+      });
   }
   return genesisTimePromise;
 }
