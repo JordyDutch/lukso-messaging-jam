@@ -137,9 +137,15 @@ export function Wall() {
   const convPriv = up.convPriv;
   useEffect(() => {
     let live = true;
-    decodePosts(raw, { addr: up.address, convPriv }).then((d) => {
-      if (live) setDecoded(d);
-    });
+    decodePosts(raw, { addr: up.address, convPriv })
+      .then((d) => {
+        const pub = d.filter((x) => !x.encrypted).length;
+        console.info(
+          `[wall-read] decodePosts DONE: ${d.length} decoded, ${pub} public, live=${live}`,
+        );
+        if (live) setDecoded(d);
+      })
+      .catch((e) => console.error('[wall-read] decodePosts THREW:', e));
     return () => {
       live = false;
     };
@@ -160,10 +166,11 @@ export function Wall() {
 
   const meLc = up.address.toLowerCase();
 
-  const publicFeed = useMemo(
-    () => decoded.filter((p) => !p.encrypted),
-    [decoded],
-  );
+  const publicFeed = useMemo(() => {
+    const f = decoded.filter((p) => !p.encrypted);
+    console.info(`[wall-read] publicFeed render: decoded=${decoded.length} public=${f.length}`);
+    return f;
+  }, [decoded]);
 
   // Public posts that @tag the connected UP — "someone mentioned you".
   const mentions = useMemo(

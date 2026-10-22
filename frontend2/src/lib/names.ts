@@ -42,9 +42,13 @@ export async function labelOf(address: string): Promise<string> {
   return upLabel(address, name);
 }
 
+// NOTE: search_profiles_v2 takes `search_query` / `limit_count` (NOT `search` /
+// `limit`) and `limit` is NOT a top-level field arg either — the old names made
+// every query fail GRAPHQL_VALIDATION, so names never resolved and the UI fell
+// back to hashes everywhere. Verified against live introspection 2026-10-22.
 const QUERY = `
   query Search($q: String!) {
-    search_profiles_v2(args: { search: $q }, limit: 8) {
+    search_profiles_v2(args: { search_query: $q, limit_count: 8 }) {
       id
       name
       profileImages(limit: 1) { url }
@@ -60,7 +64,7 @@ interface EnvioRow {
 
 const BY_ID = `
   query ById($id: String!) {
-    LSP3ProfileMetadata_by_pk: search_profiles_v2(args: { search: $id }, limit: 1) {
+    LSP3ProfileMetadata_by_pk: search_profiles_v2(args: { search_query: $id, limit_count: 1 }) {
       id
       name
     }
