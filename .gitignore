@@ -10,3 +10,6 @@ npm-debug.log*
 poc/up-wg-handshake/e2e-lab/keys/
 poc/up-wg-handshake/e2e-lab/run/
 poc/up-wg-handshake/e2e-lab/*-state.json
+
+# third-party reference clones (tools-mock-relayer); fork point documented in poc/lab-ups spike
+vendor/

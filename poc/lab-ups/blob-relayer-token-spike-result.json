@@ -1,0 +1,41 @@
+{
+  "network": "lukso-mainnet",
+  "steps": {
+    "charger": {
+      "dawg": "0xC2a0eE36313e6835815C8e45c1936Ec0544a5B5D",
+      "grant": "10",
+      "userBalance": "10"
+    },
+    "authorize": {
+      "approved": "10",
+      "operators": [
+        "0x80B890Cd922925d0D74c99c9FaC3f17a66640135"
+      ]
+    },
+    "execute": {
+      "txHash": "0xce0dda2c221a66aa5371781f848e8eef8c170f85096ed68cf538edaae70a2836",
+      "postedBlobId": "7",
+      "from": "0xA02B2b0cB13a87824B0e42C951de3B1a20ECbA5C",
+      "fromIsUp": true,
+      "blobHash": "0x013e653f0c929940807831b52bb1efb414f6d6278e6e96d92617f35aba668c6e",
+      "bodyRecovered": true,
+      "gasUsed": "132113",
+      "userBalanceAfter": "9",
+      "operatorBalance": "1"
+    },
+    "negativeStockRelayer": {
+      "type": 2,
+      "blobAttached": false,
+      "reverts": false,
+      "postSucceededOnChain": true,
+      "postedId": "8",
+      "bodyRecoverable": false,
+      "tx": "0x2daaa6a779b791a04a3a1b606ea4daf5bf41288519ac705767501ccc73d9af85",
+      "break": "Type-2 relay anchors the hash and charges the user, but no blob is attached so the body is irrecoverable (silent data loss)."
+    }
+  },
+  "verdict": "PASS",
+  "forkPoint": "relayer.service.ts handleExecute: signTransaction(Type-2) -> sendTransaction({type:3, blobs, kzg}) when payload targets postBlob",
+  "contractChangeToWallV2": false,
+  "relayerBase": "m8b-dev/tools-mock-relayer @ server/antica (LSP15 + LSP7 TokenQuotaTransactionsCount)"
+}
