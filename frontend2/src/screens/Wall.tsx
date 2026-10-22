@@ -14,6 +14,8 @@ import {
   postPublicBlob,
   postDm,
   postDmBlob,
+  loadCachedFeed,
+  saveCachedFeed,
   type WallPost,
   type RelayCtx,
   type SignOutcome,
@@ -104,7 +106,10 @@ export function Wall() {
   );
 
   const [raw, setRaw] = useState<WallPost[]>([]);
-  const [decoded, setDecoded] = useState<WallPost[]>([]);
+  // Hydrate the decoded feed from the last session's snapshot so re-entering the
+  // dApp shows posts INSTANTLY — no waiting on the ~90k-block poller scan. The
+  // poller then extends/refines this in the background.
+  const [decoded, setDecoded] = useState<WallPost[]>(() => loadCachedFeed(up.address));
   const [tab, setTab] = useState<Tab>({ kind: 'public' });
   const [peerAnnounced, setPeerAnnounced] = useState<Record<string, boolean>>({});
   const [roster, setRoster] = useState<RosterEntry[]>([]);
@@ -182,6 +187,13 @@ export function Wall() {
     console.info(`[wall-read] publicFeed render: decoded=${decoded.length} public=${f.length}`);
     return f;
   }, [decoded]);
+
+  // Snapshot the public feed so the next visit renders instantly from cache.
+  // Only persist public posts (never decrypted DM text), and only when there is
+  // something to store (don't clobber a good cache with an empty first paint).
+  useEffect(() => {
+    if (publicFeed.length) saveCachedFeed(up.address, publicFeed);
+  }, [publicFeed, up.address]);
 
   // Public posts that @tag the connected UP — "someone mentioned you".
   const mentions = useMemo(

@@ -608,3 +608,43 @@ export async function watchWall(
     clearTimeout(timer);
   };
 }
+
+// ---------------------------------------------------------------------------
+// Decoded-feed persistence
+//
+// The slow part of a reload is NOT the beacon — it is the ~90k-block
+// queryFilter scan watchWall does to rediscover posts, which only emits once
+// it finishes. To make re-entering the dApp instant we snapshot the fully
+// DECODED feed to localStorage (per wall+UP), hydrate it synchronously on
+// mount, and let the background poller extend/refine it. WallPost is entirely
+// JSON-serializable (ids/numbers/bools + hex strings), and posts are
+// append-only + immutable once decoded, so a stale snapshot is always a safe
+// prefix of the truth. Decrypted DM text is NOT persisted — only the public
+// feed is cached (callers pass already-public posts).
+const FEED_LS_PREFIX = 'updawg.feed.v1';
+
+function feedKey(up: string): string {
+  return `${FEED_LS_PREFIX}:${WALL_ADDRESS.toLowerCase()}:${up.toLowerCase()}`;
+}
+
+/** Read the cached decoded feed for this UP (newest-first). Empty on miss. */
+export function loadCachedFeed(up: string): WallPost[] {
+  try {
+    const raw = localStorage.getItem(feedKey(up));
+    if (!raw) return [];
+    const arr = JSON.parse(raw) as WallPost[];
+    if (!Array.isArray(arr)) return [];
+    return arr.filter((p) => p && typeof p.id === 'number');
+  } catch {
+    return [];
+  }
+}
+
+/** Snapshot the decoded feed for this UP. Caller passes display-ready posts. */
+export function saveCachedFeed(up: string, posts: WallPost[]): void {
+  try {
+    localStorage.setItem(feedKey(up), JSON.stringify(posts));
+  } catch {
+    /* quota / unavailable — in-memory feed still works this session */
+  }
+}
