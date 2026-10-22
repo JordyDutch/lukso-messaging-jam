@@ -1,0 +1,42 @@
+{
+  "network": "lukso-mainnet",
+  "approach": "frontend LSP25 signature -> backend recover+validate+charge+Type-3",
+  "steps": {
+    "setup": {
+      "dawg": "0xc83bAB10517c9C5a194218753fD89fc5C8F08D96",
+      "userBalance": "10"
+    },
+    "execute": {
+      "recoveredSigner": "0xE9e848DB589557bDF3e4443160Ef399B09b96B15",
+      "isController": true,
+      "txHash": "0x6fe4dbd0c04114e22185e8e6b4ec6f1ca8a28a3e3b87dabc2050ae8390db0ac5",
+      "postedId": "9",
+      "from": "0xA02B2b0cB13a87824B0e42C951de3B1a20ECbA5C",
+      "fromIsUp": true,
+      "bodyRecovered": true,
+      "userBalanceAfter": "9"
+    },
+    "negative": {
+      "recovered": "0xC5cC4A4F8633373693b626ACB77B2Cc1d41e525c",
+      "permOnUp": "0x",
+      "rejected": true
+    }
+  },
+  "verdict": "PASS",
+  "contractChangeNeeded": false,
+  "frontendSends": [
+    "up",
+    "signature",
+    "nonce",
+    "validityTimestamps",
+    "payload",
+    "blobHex"
+  ],
+  "backendDoes": [
+    "recover signer from LSP25 sig",
+    "validate LSP6 controller via ERC725Y AddressPermissions",
+    "DAWG balance/allowance",
+    "send Type-3 executeRelayCall",
+    "charge 1 DAWG"
+  ]
+}
