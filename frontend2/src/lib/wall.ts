@@ -316,18 +316,153 @@ export async function postDmBlob(args: {
   return sendBlobPost(args.signer, args.peerAddr, true, threadId, body, args.relay);
 }
 
-// Recovered blob bodies, cached by post id for the session. A blob's body is
-// immutable (its id and anchored hash never change), so once recovered we never
-// need to refetch it — this makes a re-run of decodePosts near-instant for
-// already-seen posts and keeps a mid-flight restart from redoing every beacon
-// fetch. Value is the decoded payload, or `null` once confirmed pruned/missing.
+// Recovered blob bodies, cached by post id. A blob's body is immutable (its id
+// and anchored hash never change), so once recovered we never refetch it. The
+// in-memory map is the hot cache; it is also persisted to localStorage so a
+// page reload is INSTANT (no re-fetching every sidecar from the beacon). Value
+// is the decoded payload, or `null` once confirmed pruned/missing.
 const blobBodyCache = new Map<number, Uint8Array | null>();
 
-/** Decode a batch of posts for display from my vantage point. */
+const BODY_LS_KEY = 'updawg.blobBodies.v1';
+let lsLoaded = false;
+
+/** Seed the in-memory cache from localStorage once (hex-encoded payloads). */
+function loadPersistedBodies(): void {
+  if (lsLoaded) return;
+  lsLoaded = true;
+  try {
+    const raw = localStorage.getItem(BODY_LS_KEY);
+    if (!raw) return;
+    const obj = JSON.parse(raw) as Record<string, string | null>;
+    for (const [id, hex] of Object.entries(obj)) {
+      blobBodyCache.set(Number(id), hex === null ? null : ethers.getBytes(hex));
+    }
+  } catch {
+    /* corrupt cache — ignore, it will rebuild from the beacon */
+  }
+}
+
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
+/** Debounced write-back of the whole body cache to localStorage. */
+function persistBodies(): void {
+  if (persistTimer) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    try {
+      const obj: Record<string, string | null> = {};
+      for (const [id, body] of blobBodyCache) {
+        obj[id] = body === null ? null : ethers.hexlify(body);
+      }
+      localStorage.setItem(BODY_LS_KEY, JSON.stringify(obj));
+    } catch {
+      /* quota / unavailable — the in-memory cache still works this session */
+    }
+  }, 400);
+}
+
+/**
+ * Decode a SINGLE post from my vantage point. Pure given the caches; recovers
+ * the blob body (cached), resolves the author proof, and decrypts DMs I can
+ * open. Returns the display-ready post.
+ */
+async function decodeOne(
+  base: WallPost,
+  me: { addr: string; convPriv: Uint8Array } | null,
+  readProvider: ethers.Provider,
+  getPub: (addr: string) => Promise<Uint8Array | null>,
+): Promise<WallPost> {
+  let p = base;
+  if (p.lane === 'blob') {
+    if (!p.blobHash) return { ...p, pruned: true };
+
+    let payload: Uint8Array | null;
+    if (blobBodyCache.has(p.id)) {
+      payload = blobBodyCache.get(p.id)!;
+    } else {
+      const got = await fetchBlobBody(readProvider, p.txHash, p.blobHash);
+      if (!got.ok || !got.payload) {
+        // Cache a definitive pruned/mismatch as null; do NOT cache a transient
+        // 'error' (let it retry next pass).
+        console.warn(`[wall-read] id=${p.id} blob body unavailable:`, got.reason, got.error ?? '');
+        if (got.reason === 'pruned' || got.reason === 'mismatch') {
+          blobBodyCache.set(p.id, null);
+          persistBodies();
+        }
+        return { ...p, pruned: got.reason === 'pruned' || got.reason === 'mismatch' };
+      }
+      payload = got.payload;
+      blobBodyCache.set(p.id, payload);
+      persistBodies();
+      console.info(`[wall-read] id=${p.id} blob body recovered (${payload.length}B)`);
+    }
+    if (!payload) return { ...p, pruned: true };
+    p = { ...p, bodyRaw: ethers.hexlify(payload) };
+
+    // Author resolution (Option B): recover the signer from meta, re-verify it
+    // controls meta.up; on success author = meta.up. See header docs.
+    const am = unpackAuthMeta(p.metaRaw);
+    if (am) {
+      try {
+        const message = buildAuthMessage({
+          chainId: CHAIN_ID,
+          wall: WALL_ADDRESS,
+          up: am.up,
+          tag: p.tag,
+          encrypted: p.encrypted,
+          threadId: p.threadId,
+          blobHash: p.blobHash,
+          len: payload.length,
+          nonce: am.nonce,
+        });
+        const recovered = ethers.verifyMessage(message, am.sig);
+        const ok = await isControllerOf(readProvider, am.up, recovered).catch(() => false);
+        p = { ...p, from: ok ? am.up : p.from, authorName: ok ? am.name : undefined, authorVerified: ok };
+      } catch {
+        /* leave p.from as the on-chain relayer address */
+      }
+    }
+  }
+
+  if (!p.encrypted) return { ...p, text: safeUtf8(p.bodyRaw) };
+  // P2P signaling envelope — not a human chat line.
+  if (looksLikeP2pSignal(p.bodyRaw)) return { ...p, signal: true };
+  // encrypted: can I open it? Only if I'm a participant and know the peer pub.
+  if (me) {
+    const meLc = me.addr.toLowerCase();
+    const isMine = p.from.toLowerCase() === meLc || p.tag.toLowerCase() === meLc;
+    if (isMine) {
+      const peer = p.from.toLowerCase() === meLc ? p.tag : p.from;
+      const peerPub = await getPub(peer);
+      if (peerPub) {
+        try {
+          const threadId = threadIdFor(me.addr, peer);
+          const key = conversationKey(me.convPriv, peerPub, threadId);
+          const pt = await openBytes(ethers.getBytes(p.bodyRaw), key);
+          return { ...p, text: dec.decode(pt) };
+        } catch {
+          /* fall through to locked */
+        }
+      }
+    }
+  }
+  return { ...p, locked: true };
+}
+
+/**
+ * Decode a batch of posts for display. Streams results as each post decodes:
+ * `onPost(decoded)` fires per post (so the UI can render them one-by-one instead
+ * of waiting for the whole feed), and the full ordered array is also returned.
+ *
+ * Posts are decoded NEWEST-FIRST so the most recent content appears first, and
+ * cached/persisted bodies make reloads and re-runs near-instant.
+ */
 export async function decodePosts(
   posts: WallPost[],
   me: { addr: string; convPriv: Uint8Array } | null,
+  onPost?: (p: WallPost) => void,
 ): Promise<WallPost[]> {
+  loadPersistedBodies();
+
   // cache peer convPub lookups for this batch
   const pubCache = new Map<string, Uint8Array | null>();
   const getPub = async (addr: string): Promise<Uint8Array | null> => {
@@ -346,108 +481,16 @@ export async function decodePosts(
 
   const readProvider = await getReadProvider();
 
-  const out: WallPost[] = [];
-  for (const base of posts) {
-    let p = base;
-    // BLOB lane: the body is not on-chain. Recover it from the beacon sidecar
-    // (verifying the commitment hashes to the anchored blobHash), then decode
-    // exactly like a text post. A pruned sidecar (>~18d) leaves the hash but no
-    // body — mark it so the UI shows "expired".
-    if (p.lane === 'blob') {
-      if (!p.blobHash) {
-        out.push({ ...p, pruned: true });
-        continue;
-      }
-      // Use the cached body if we already recovered (or confirmed-gone) this id.
-      let payload: Uint8Array | null;
-      if (blobBodyCache.has(p.id)) {
-        payload = blobBodyCache.get(p.id)!;
-      } else {
-        const got = await fetchBlobBody(readProvider, p.txHash, p.blobHash);
-        if (!got.ok || !got.payload) {
-          // A blob that can't be recovered renders as "expired". Log WHY (pruned
-          // vs. a fetch/CORS/cert error) so a blank wall stays debuggable — an
-          // `error` reason means the beacon fetch itself failed in-browser, NOT
-          // that the body is genuinely gone. Cache a definitive pruned/mismatch
-          // as null; do NOT cache a transient 'error' (let it retry next pass).
-          console.warn(`[wall-read] id=${p.id} blob body unavailable:`, got.reason, got.error ?? '');
-          if (got.reason === 'pruned' || got.reason === 'mismatch') blobBodyCache.set(p.id, null);
-          out.push({ ...p, pruned: got.reason === 'pruned' || got.reason === 'mismatch' });
-          continue;
-        }
-        payload = got.payload;
-        blobBodyCache.set(p.id, payload);
-        console.info(`[wall-read] id=${p.id} blob body recovered (${payload.length}B)`);
-      }
-      if (!payload) {
-        out.push({ ...p, pruned: true });
-        continue;
-      }
-      p = { ...p, bodyRaw: ethers.hexlify(payload) };
-
-      // Author resolution (Option B): a relayed blob post is on-chain `from` the
-      // relayer, with the real author proven in `meta`. Now that the body is
-      // recovered we know `len`, so we can rebuild the exact signed message,
-      // recover the signer, and re-verify it controls `meta.up`. On success the
-      // author = meta.up. Falls back to the on-chain `from` for direct
-      // (non-relayed) posts or any meta/signature that doesn't verify.
-      const am = unpackAuthMeta(p.metaRaw);
-      if (am) {
-        try {
-          const message = buildAuthMessage({
-            chainId: CHAIN_ID,
-            wall: WALL_ADDRESS,
-            up: am.up,
-            tag: p.tag,
-            encrypted: p.encrypted,
-            threadId: p.threadId,
-            blobHash: p.blobHash,
-            len: payload.length,
-            nonce: am.nonce,
-          });
-          const recovered = ethers.verifyMessage(message, am.sig);
-          const ok = await isControllerOf(readProvider, am.up, recovered).catch(() => false);
-          p = { ...p, from: ok ? am.up : p.from, authorName: ok ? am.name : undefined, authorVerified: ok };
-        } catch {
-          /* leave p.from as the on-chain relayer address */
-        }
-      }
-    }
-
-    if (!p.encrypted) {
-      out.push({ ...p, text: safeUtf8(p.bodyRaw) });
-      continue;
-    }
-    // P2P signaling envelope: a bootstrap message for the off-chain channel, not
-    // a human chat line. Mark it so the UI can hide it from the DM thread.
-    if (looksLikeP2pSignal(p.bodyRaw)) {
-      out.push({ ...p, signal: true });
-      continue;
-    }
-    // encrypted: can I open it? Only if I'm a participant and know the peer pub.
-    if (me) {
-      const meLc = me.addr.toLowerCase();
-      const isMine =
-        p.from.toLowerCase() === meLc || p.tag.toLowerCase() === meLc;
-      if (isMine) {
-        const peer = p.from.toLowerCase() === meLc ? p.tag : p.from;
-        const peerPub = await getPub(peer);
-        if (peerPub) {
-          try {
-            const threadId = threadIdFor(me.addr, peer);
-            const key = conversationKey(me.convPriv, peerPub, threadId);
-            const pt = await openBytes(ethers.getBytes(p.bodyRaw), key);
-            out.push({ ...p, text: dec.decode(pt) });
-            continue;
-          } catch {
-            /* fall through to locked */
-          }
-        }
-      }
-    }
-    out.push({ ...p, locked: true });
+  // Newest-first: decode high ids first so the latest posts surface immediately.
+  const ordered = [...posts].sort((a, b) => b.id - a.id);
+  const byId = new Map<number, WallPost>();
+  for (const base of ordered) {
+    const d = await decodeOne(base, me, readProvider, getPub);
+    byId.set(d.id, d);
+    onPost?.(d);
   }
-  return out;
+  // Return in ascending id order (the caller/UI sorts for display as it likes).
+  return [...byId.values()].sort((a, b) => a.id - b.id);
 }
 
 function safeUtf8(hex: string): string {

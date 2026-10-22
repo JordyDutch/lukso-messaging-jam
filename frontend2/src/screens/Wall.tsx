@@ -136,18 +136,27 @@ export function Wall() {
   // so reading it fresh inside the effect is safe. (Blank-wall fix 2026-10-22.)
   const convPriv = up.convPriv;
   useEffect(() => {
-    // Do NOT cancel an in-flight decode on cleanup. A new `raw` (e.g. the user's
-    // own just-posted blob arriving mid-decode) would otherwise abort the pass
-    // before setDecoded, and since a full feed decode outlasts the poll interval
-    // the feed could stay empty. decodePosts caches recovered bodies by id, so a
-    // superseded pass is cheap and any pass runs to completion. Apply by
-    // last-write-wins on size: posts are append-only, so a result is never
-    // "stale" in a way that should shrink the feed — only ever grow it.
-    decodePosts(raw, { addr: up.address, convPriv })
+    // STREAMING decode: decodePosts fires `onPost` as each post decodes
+    // (newest-first), so the wall fills in one post at a time instead of
+    // appearing all-at-once after a long wait. Each post is merged into
+    // `decoded` by id (last-write-wins per id), so the user's own just-posted
+    // blob arriving mid-decode simply upserts rather than aborting the pass.
+    // Recovered bodies are cached + persisted to localStorage, so re-entering
+    // the dApp renders cached posts immediately without re-fetching sidecars.
+    // No cleanup cancellation: a superseded pass is cheap (cache hits) and only
+    // ever upserts, and posts are append-only so merged state never shrinks.
+    const upsert = (p: WallPost) =>
+      setDecoded((prev) => {
+        const i = prev.findIndex((x) => x.id === p.id);
+        if (i === -1) return [...prev, p].sort((a, b) => a.id - b.id);
+        const next = prev.slice();
+        next[i] = p;
+        return next;
+      });
+    decodePosts(raw, { addr: up.address, convPriv }, upsert)
       .then((d) => {
         const pub = d.filter((x) => !x.encrypted).length;
         console.info(`[wall-read] decodePosts DONE: ${d.length} decoded, ${pub} public`);
-        setDecoded((prev) => (d.length >= prev.length ? d : prev));
       })
       .catch((e) => console.error('[wall-read] decodePosts THREW:', e));
     // eslint-disable-next-line react-hooks/exhaustive-deps
