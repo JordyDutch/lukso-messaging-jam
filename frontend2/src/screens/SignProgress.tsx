@@ -73,7 +73,10 @@ const LABEL: Record<SignPhase, string> = {
   idle: '',
   signing: 'Sniffing for your signature… approve it in your UP extension 🐾',
   relaying: 'Signed! Sending your bark to the chain…',
-  done: 'Posted! It’s on-chain forever. 🌭',
+  // The spinner only runs for BLOB posts (text lands instantly, no spinner),
+  // so "done" is always a blob: body is ephemeral (~18d on the beacon), only
+  // the hash is anchored on-chain. Don't claim "forever" here.
+  done: 'Sent as a blob! Body lives ~18 days on the beacon; its hash is on-chain. 🌭',
   error: 'Hmm, that didn’t go through.',
 };
 
