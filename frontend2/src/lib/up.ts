@@ -33,6 +33,8 @@ export interface UpSession {
   address: string;
   signer: ethers.JsonRpcSigner;
   provider: ethers.BrowserProvider;
+  /** raw injected EIP-1193 provider (for the Type-3 capability probe). */
+  eip1193: ethers.Eip1193Provider;
   convPriv: Uint8Array;
   convPub: Uint8Array;
 }
@@ -119,7 +121,7 @@ export async function connectUp(): Promise<UpSession> {
   const address = ethers.getAddress(await signer.getAddress());
 
   const { convPriv, convPub } = await deriveConvKey(signer);
-  return { address, signer, provider, convPriv, convPub };
+  return { address, signer, provider, eip1193: up, convPriv, convPub };
 }
 
 /**

@@ -13,6 +13,7 @@
 import { ethers } from 'ethers';
 import { WALL_ADDRESS } from './config';
 import { getReadProvider } from './rpc';
+import { encodeBlob, blobTxFields, versionedHashFor, fetchBlobBody } from './blob';
 import {
   conversationKey,
   threadIdFor,
@@ -26,9 +27,13 @@ import { convPubOf } from './registry';
 
 export const WALL_ABI = [
   'function post(address tag, bool encrypted, bytes32 threadId, bytes body) external',
+  'function postBlob(address tag, bool encrypted, bytes32 threadId, bytes32 blobHash, bytes meta) external',
   'function count() view returns (uint256)',
   'event Posted(uint256 indexed id, address indexed from, address indexed tag, bool encrypted, bytes32 threadId, uint64 timestamp, bytes body)',
+  'event PostedBlob(uint256 indexed id, address indexed from, address indexed tag, bool encrypted, bytes32 threadId, uint64 timestamp, bytes32 blobHash, bytes meta)',
 ] as const;
+
+export type Lane = 'text' | 'blob';
 
 export interface WallPost {
   id: number;
@@ -37,11 +42,17 @@ export interface WallPost {
   encrypted: boolean;
   threadId: string;
   timestamp: number;
-  bodyRaw: string; // hex bytes as stored on-chain
+  lane: Lane;
   txHash: string;
+  // TEXT lane: body is in the event. BLOB lane: body rode in the blob (NOT
+  // on-chain); bodyRaw is '0x' until the decoder fetches it from the beacon.
+  bodyRaw: string; // hex bytes (text: from event; blob: recovered from beacon)
+  blobHash?: string; // blob lane: the anchored KZG versioned hash
+  metaRaw?: string; // blob lane: tiny framing bytes from the event
   // filled in by the decoder:
   text?: string; // decoded plaintext, or decrypted DM text
   locked?: boolean; // encrypted and we cannot decrypt
+  pruned?: boolean; // blob lane: body no longer retrievable (sidecar pruned)
   signal?: boolean; // P2P WebRTC signaling envelope — not a human message
 }
 
@@ -106,6 +117,74 @@ export async function postDm(args: {
   return tx.hash;
 }
 
+// ---- BLOB lane senders ----------------------------------------------------
+// Same (tag, encrypted, threadId, body) semantics as the text senders, but the
+// body rides in an EIP-4844 blob (ephemeral) and only its KZG versioned hash is
+// anchored on-chain via postBlob. Requires a wallet that signs Type-3 txs — if
+// the signer/provider refuses type:3, sendTransaction rejects and the caller
+// (UI) surfaces it. `meta` carries tiny framing only (never the body).
+
+const IFACE = new ethers.Interface(WALL_ABI);
+
+/** Build + send a Type-3 postBlob tx carrying `body` in a blob. */
+async function sendBlobPost(
+  signer: ethers.Signer,
+  tag: string,
+  encrypted: boolean,
+  threadId: string,
+  body: Uint8Array,
+): Promise<string> {
+  const blob = encodeBlob(body);
+  const blobHash = await versionedHashFor(blob);
+  const meta = enc.encode(JSON.stringify({ v: 1, len: body.length }));
+  const data = IFACE.encodeFunctionData('postBlob', [
+    tag,
+    encrypted,
+    threadId,
+    blobHash,
+    meta,
+  ]);
+  const fields = await blobTxFields(blob);
+  const tx = await signer.sendTransaction({
+    to: WALL_ADDRESS,
+    data,
+    ...fields,
+  });
+  await tx.wait();
+  return tx.hash;
+}
+
+/** Post a PUBLIC plaintext message via the blob lane, optionally tagging a UP. */
+export async function postPublicBlob(
+  signer: ethers.Signer,
+  text: string,
+  tag?: string | null,
+): Promise<string> {
+  return sendBlobPost(signer, tag ?? ZERO, false, ethers.ZeroHash, enc.encode(text));
+}
+
+/** Post an ENCRYPTED DM to `peer` via the blob lane. Seals exactly like postDm. */
+export async function postDmBlob(args: {
+  signer: ethers.Signer;
+  myAddr: string;
+  myConvPriv: Uint8Array;
+  peerAddr: string;
+  text?: string;
+  rawBody?: Uint8Array;
+}): Promise<string> {
+  const threadId = threadIdFor(args.myAddr, args.peerAddr);
+  let body: Uint8Array;
+  if (args.rawBody) {
+    body = args.rawBody;
+  } else {
+    const peerPubHex = await convPubOf(args.peerAddr);
+    if (!peerPubHex) throw new Error('peer has not announced a conversation key yet');
+    const key = conversationKey(args.myConvPriv, ub(peerPubHex), threadId);
+    body = await sealBytes(enc.encode(args.text ?? ''), key);
+  }
+  return sendBlobPost(args.signer, args.peerAddr, true, threadId, body);
+}
+
 /** Decode a batch of posts for display from my vantage point. */
 export async function decodePosts(
   posts: WallPost[],
@@ -127,8 +206,28 @@ export async function decodePosts(
     return v;
   };
 
+  const readProvider = await getReadProvider();
+
   const out: WallPost[] = [];
-  for (const p of posts) {
+  for (const base of posts) {
+    let p = base;
+    // BLOB lane: the body is not on-chain. Recover it from the beacon sidecar
+    // (verifying the commitment hashes to the anchored blobHash), then decode
+    // exactly like a text post. A pruned sidecar (>~18d) leaves the hash but no
+    // body — mark it so the UI shows "expired".
+    if (p.lane === 'blob') {
+      if (!p.blobHash) {
+        out.push({ ...p, pruned: true });
+        continue;
+      }
+      const got = await fetchBlobBody(readProvider, p.txHash, p.blobHash);
+      if (!got.ok || !got.payload) {
+        out.push({ ...p, pruned: got.reason === 'pruned' || got.reason === 'mismatch' });
+        continue;
+      }
+      p = { ...p, bodyRaw: ethers.hexlify(got.payload) };
+    }
+
     if (!p.encrypted) {
       out.push({ ...p, text: safeUtf8(p.bodyRaw) });
       continue;
@@ -191,7 +290,7 @@ export async function watchWall(
   const head = await provider.getBlockNumber();
   let from = Math.max(0, head - lookback);
 
-  const ingest = (log: ethers.EventLog) => {
+  const ingestText = (log: ethers.EventLog) => {
     const a = log.args;
     if (!a) return;
     const id = Number(a.id);
@@ -203,7 +302,28 @@ export async function watchWall(
       encrypted: Boolean(a.encrypted),
       threadId: a.threadId,
       timestamp: Number(a.timestamp),
+      lane: 'text',
       bodyRaw: a.body,
+      txHash: log.transactionHash,
+    });
+  };
+
+  const ingestBlob = (log: ethers.EventLog) => {
+    const a = log.args;
+    if (!a) return;
+    const id = Number(a.id);
+    if (byId.has(id)) return;
+    byId.set(id, {
+      id,
+      from: ethers.getAddress(a.from),
+      tag: ethers.getAddress(a.tag),
+      encrypted: Boolean(a.encrypted),
+      threadId: a.threadId,
+      timestamp: Number(a.timestamp),
+      lane: 'blob',
+      bodyRaw: '0x', // recovered from the beacon by decodePosts
+      blobHash: a.blobHash,
+      metaRaw: a.meta,
       txHash: log.transactionHash,
     });
   };
@@ -224,8 +344,12 @@ export async function watchWall(
         const STEP = 1000;
         for (let lo = from; lo <= to; lo += STEP) {
           const hi = Math.min(lo + STEP - 1, to);
-          const logs = (await wall.queryFilter(wall.filters.Posted(), lo, hi)) as ethers.EventLog[];
-          for (const l of logs) ingest(l);
+          const [textLogs, blobLogs] = await Promise.all([
+            wall.queryFilter(wall.filters.Posted(), lo, hi) as Promise<ethers.EventLog[]>,
+            wall.queryFilter(wall.filters.PostedBlob(), lo, hi) as Promise<ethers.EventLog[]>,
+          ]);
+          for (const l of textLogs) ingestText(l);
+          for (const l of blobLogs) ingestBlob(l);
         }
         from = to + 1;
         emit();

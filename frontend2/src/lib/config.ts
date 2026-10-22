@@ -75,6 +75,34 @@ export const ENVIO_GRAPHQL =
 export const EXPLORER = 'https://explorer.lukso.network';
 
 /**
+ * LUKSO beacon (consensus) API — serves EIP-4844 blob sidecars so a reader can
+ * recover a blob body by slot: `/eth/v1/beacon/blob_sidecars/{slot}`. Proven
+ * live 2026-10-22 (recovered the spike blob by a third party and verified
+ * 0x01 ++ sha256(kzg_commitment)[1:] == the on-chain anchored hash). Blobs are
+ * pruned after ~18 days, so this is the retrieval path for the blob lane; an
+ * older blob returns 404 (body gone, hash still on-chain). Override with
+ * VITE_BEACON_URL. Note: the public EL host also answers the beacon API.
+ */
+export const BEACON_URL: string =
+  (import.meta.env?.VITE_BEACON_URL as string | undefined) ??
+  'https://rpc.mainnet.lukso.network';
+
+/**
+ * Transport for NEW posts. 'blob' = EIP-4844 blob lane (body ephemeral in a
+ * blob, KZG hash anchored on-chain via WallV2.postBlob); 'text' = legacy
+ * calldata+event lane (WallV2.post). DEFAULT is 'blob' per product decision
+ * (2026-10-22). The UI exposes a toggle; blob posting needs a wallet that signs
+ * Type-3 txs — if the UP extension can't (see blob.ts canSignType3), the UI
+ * surfaces it and the team implements extension/relay Type-3 support. Reading
+ * always handles BOTH lanes regardless of this setting.
+ */
+export type Transport = 'blob' | 'text';
+export const DEFAULT_TRANSPORT: Transport =
+  ((import.meta.env?.VITE_DEFAULT_TRANSPORT as string | undefined) === 'text'
+    ? 'text'
+    : 'blob');
+
+/**
  * Wall contract — WallV2, LIVE on LUKSO mainnet (deployed 2026-10-22).
  * Stores public plaintext posts and encrypted DM ciphertext on-chain via the
  * `Posted` event (the frontend reads from logs, not state). v2 dropped the

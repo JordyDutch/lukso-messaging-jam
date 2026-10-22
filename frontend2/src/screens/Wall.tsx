@@ -11,9 +11,12 @@ import {
   watchWall,
   decodePosts,
   postPublic,
+  postPublicBlob,
   postDm,
+  postDmBlob,
   type WallPost,
 } from '../lib/wall';
+import { useTransport } from '../lib/transport';
 import { convPubOf } from '../lib/registry';
 import { threadIdFor } from '../lib/crypto';
 import { resolveName, nameOf, type ProfileHit } from '../lib/names';
@@ -150,6 +153,7 @@ export function Wall() {
               </button>
             )}
           </div>
+          <TransportToggle />
         </div>
         <nav className="tabs">
           <button
@@ -210,6 +214,74 @@ export function Wall() {
   );
 }
 
+/**
+ * TransportToggle — pick the lane for NEW posts. Blob is the default: the body
+ * rides in an ephemeral EIP-4844 blob and only its hash is anchored on-chain
+ * (cheap, ~18-day body). Text is the legacy calldata+event lane (permanent).
+ * Reading always handles both. If the wallet can't sign Type-3, blob is
+ * disabled and we explain why.
+ */
+function TransportToggle() {
+  const { transport, setTransport, type3 } = useTransport();
+  const blobBlocked = type3 === 'no';
+  return (
+    <div className="transport small" style={{ marginTop: 8 }}>
+      <div className="muted" style={{ marginBottom: 2 }}>transport</div>
+      <div className="seg">
+        <button
+          className={transport === 'blob' ? 'seg-on' : ''}
+          disabled={blobBlocked}
+          title="Body in an EIP-4844 blob (ephemeral ~18d); only its hash is anchored on-chain. Cheap."
+          onClick={() => setTransport('blob')}
+        >
+          🫧 Blob
+        </button>
+        <button
+          className={transport === 'text' ? 'seg-on' : ''}
+          title="Body in calldata + event. Permanent on-chain."
+          onClick={() => setTransport('text')}
+        >
+          📝 Text
+        </button>
+      </div>
+      {blobBlocked && (
+        <div className="muted" style={{ marginTop: 4 }}>
+          Your wallet can’t sign blob (Type-3) txs yet — using Text. Blob posting
+          is pending wallet/relay support.
+        </div>
+      )}
+      {!blobBlocked && transport === 'blob' && (
+        <div className="muted" style={{ marginTop: 4 }}>
+          Bodies expire (~18d); the hash stays on-chain forever.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A tiny lane badge so you can see which posts rode a blob. */
+function LaneBadge({ p }: { p: WallPost }) {
+  if (p.lane !== 'blob') return null;
+  return (
+    <span className="lane-badge small muted" title="posted via EIP-4844 blob (body ephemeral, hash on-chain)">
+      🫧 blob
+    </span>
+  );
+}
+
+/** Render a post body, handling an expired (pruned) blob body + locked DMs. */
+function Body({ p }: { p: WallPost }) {
+  if (p.pruned) {
+    return (
+      <em className="muted">
+        🫧 blob body expired — only its on-chain hash remains
+      </em>
+    );
+  }
+  if (p.locked) return <em className="muted">🔒 encrypted — cannot decrypt</em>;
+  return <>{p.text}</>;
+}
+
 function PublicPane({ me, up, feed }: { me: string; up: ReturnType<typeof useApp>['state']['up']; feed: WallPost[] }) {
   const [text, setText] = useState('');
   const [tagInput, setTagInput] = useState('');
@@ -218,6 +290,7 @@ function PublicPane({ me, up, feed }: { me: string; up: ReturnType<typeof useApp
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const deb = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { transport } = useTransport();
 
   function onTag(v: string) {
     setTagInput(v);
@@ -242,7 +315,11 @@ function PublicPane({ me, up, feed }: { me: string; up: ReturnType<typeof useApp
     setBusy(true);
     setErr(null);
     try {
-      await postPublic(up!.signer, text.trim(), tag?.address ?? null);
+      if (transport === 'blob') {
+        await postPublicBlob(up!.signer, text.trim(), tag?.address ?? null);
+      } else {
+        await postPublic(up!.signer, text.trim(), tag?.address ?? null);
+      }
       setText('');
       setTagInput('');
       setTag(null);
@@ -299,8 +376,9 @@ function PublicPane({ me, up, feed }: { me: string; up: ReturnType<typeof useApp
                 <span className={p.tag.toLowerCase() === me ? 'tagged tagme' : 'tagged'}> → <Tag address={p.tag} /></span>
               )}
               <span className="ts">{fmt(p.timestamp)}</span>
+              <LaneBadge p={p} />
             </div>
-            <div className="body">{p.text}</div>
+            <div className="body"><Body p={p} /></div>
             <a className="small muted" href={`${EXPLORER}/tx/${p.txHash}`} target="_blank" rel="noreferrer">on-chain ↗</a>
           </li>
         ))}
@@ -337,8 +415,9 @@ function MentionsPane({ me, feed }: { me: string; feed: WallPost[] }) {
               <Who address={p.from} />
               <span className="tagged tagme"> → you</span>
               <span className="ts">{fmt(p.timestamp)}</span>
+              <LaneBadge p={p} />
             </div>
-            <div className="body">{p.text}</div>
+            <div className="body"><Body p={p} /></div>
             <a className="small muted" href={`${EXPLORER}/tx/${p.txHash}`} target="_blank" rel="noreferrer">on-chain ↗</a>
           </li>
         ))}
@@ -506,18 +585,21 @@ function DmPane({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const ready = meAnnounced && peerAnnounced;
+  const { transport } = useTransport();
 
   async function send() {
     setBusy(true);
     setErr(null);
     try {
-      await postDm({
+      const dmArgs = {
         signer: up!.signer,
         myAddr: up!.address,
         myConvPriv: up!.convPriv,
         peerAddr: peer.address,
         text: text.trim(),
-      });
+      };
+      if (transport === 'blob') await postDmBlob(dmArgs);
+      else await postDm(dmArgs);
       setText('');
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -550,7 +632,7 @@ function DmPane({
               <span className="mono">{p.from.toLowerCase() === meLc ? 'you' : peer.name}</span>
               <span className="ts">{fmt(p.timestamp)}</span>
             </div>
-            <div className="body">{p.locked ? <em className="muted">🔒 encrypted — cannot decrypt</em> : p.text}</div>
+            <div className="body"><Body p={p} /></div>
             <a className="small muted" href={`${EXPLORER}/tx/${p.txHash}`} target="_blank" rel="noreferrer">on-chain ↗</a>
           </li>
         ))}

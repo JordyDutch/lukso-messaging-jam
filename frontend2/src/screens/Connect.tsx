@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { useApp } from '../state/app';
 import { connectUp } from '../lib/up';
+import { initType3Probe } from '../lib/transport';
 
 export function Connect() {
   const { dispatch } = useApp();
@@ -14,6 +15,9 @@ export function Connect() {
     try {
       const up = await connectUp();
       dispatch({ type: 'connected', up });
+      // Probe blob (Type-3) support in the background; forces text lane if the
+      // wallet clearly can't sign Type-3 (the composer surfaces why).
+      void initType3Probe(up.eip1193);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
