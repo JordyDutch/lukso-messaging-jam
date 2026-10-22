@@ -1,0 +1,3 @@
+
+# built bundle — rebuilt by CI/Pages, never commit (can bake deploy-specific env)
+dist/

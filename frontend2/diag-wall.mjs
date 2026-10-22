@@ -1,5 +1,5 @@
 import puppeteer from '/home/bk/p/m8b-dev/openscad-host/src/node_modules/puppeteer/lib/puppeteer/puppeteer.js';
-const URL = process.argv[2] || 'https://vpn-node.internal/app/';
+const URL = process.argv[2] || process.env.WALL_URL || 'http://localhost:5173/';
 const b = await puppeteer.launch({
   headless: 'new',
   executablePath: '/usr/bin/brave-browser',

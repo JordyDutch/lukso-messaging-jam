@@ -41,7 +41,7 @@ per-UP, step by step.
 - **DM thread** — per-peer (alice, bob). Shows the peer's announce status; only unlocks encrypted send once both announced. Decrypts my threads inline.
 
 ## Hosting
-- Static Vite build, `base=/app/`, served by a user systemd service behind
-  the :8443 VPN TLS proxy at `https://vpn-node.internal/app/`.
+- Static Vite build, served by a user systemd service behind a TLS reverse
+  proxy (set `base` to the proxy sub-path at build time).
 - TLS termination at the proxy gives a secure context (not needed for wall/DM,
   but consistent with the other VPN apps).

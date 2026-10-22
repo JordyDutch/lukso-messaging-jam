@@ -15,7 +15,7 @@
 // authorized controllers can post. Treasury/metering (1 DAWG/blob) is wired in
 // the spike and can be turned back on later behind REQUIRE_DAWG=1.
 //
-// Endpoints (same-origin behind the :8443 /relay proxy, so NO CORS, but
+// Endpoints (same-origin behind a reverse-proxy sub-path, so NO CORS, but
 // we send permissive CORS headers anyway so it also works cross-origin):
 //   GET  /nonce?up=0x..  -> { keyManager, nonce, ... }  (legacy; unused by Option B)
 //   POST /execute        body { up, upName, tag, encrypted, threadId, blobHash,

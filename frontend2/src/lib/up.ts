@@ -1,8 +1,8 @@
 // up.ts — Universal Profile connection via the injected UP browser extension
 // (EIP-1193) + ethers v6.
 //
-// We open this dApp as a STANDALONE page (served over the VPN at /app/),
-// not as a mini-app inside the UP grid. On a standalone page the UP extension
+// We open this dApp as a STANDALONE page, not as a mini-app inside the UP
+// grid. On a standalone page the UP extension
 // injects an EIP-1193 provider the same way MetaMask does:
 //   - EIP-6963 announceProvider event (preferred, conflict-free discovery), or
 //   - window.lukso (the extension's dedicated handle), or

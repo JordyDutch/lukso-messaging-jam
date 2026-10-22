@@ -1,11 +1,11 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-// Served behind the :8443 VPN reverse proxy at /app/.
-// Override with VITE_BASE='/' for a root-hosted or local `vite preview` build.
+// Static build. Root-hosted by default; set VITE_BASE to the sub-path when
+// serving behind a reverse proxy (e.g. GitHub Pages uses "/<repo>/").
 export default defineConfig({
   plugins: [react()],
-  base: process.env.VITE_BASE ?? '/app/',
+  base: process.env.VITE_BASE ?? '/',
   build: {
     target: 'es2022',
     sourcemap: true,

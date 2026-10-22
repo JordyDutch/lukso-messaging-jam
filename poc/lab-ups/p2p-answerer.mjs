@@ -78,7 +78,8 @@ const candAddr = (c) => (c.split(/\s+/)[4] ?? '');
 const isIpv6 = (c) => candAddr(c).includes(':');
 const isMdns = (c) => candAddr(c).endsWith('.local');
 const isLoopback = (c) => { const a = candAddr(c); return a === '127.0.0.1' || a === '::1'; };
-function pickCandidates(cands) { const udp = cands.filter((c) => /\budp\b/i.test(c) && !isIpv6(c) && !isLoopback(c) && !isMdns(c)); const hosts = udp.filter((c) => /typ host/.test(c)); hosts.sort((a, b) => (candAddr(a).startsWith('10.x.') ? -1 : 0) - (candAddr(b).startsWith('10.x.') ? -1 : 0)); const srflx = udp.find((c) => /typ srflx/.test(c)); const out = [...hosts.slice(0, 2), srflx].filter(Boolean); return out.length ? out : udp.slice(0, 2); }
+const isPrivateV4 = (c) => { const a = candAddr(c); if (/^10\./.test(a) || /^192\.168\./.test(a)) return true; const m = a.match(/^172\.(\d+)\./); return !!m && Number(m[1]) >= 16 && Number(m[1]) <= 31; };
+function pickCandidates(cands) { const udp = cands.filter((c) => /\budp\b/i.test(c) && !isIpv6(c) && !isLoopback(c) && !isMdns(c)); const hosts = udp.filter((c) => /typ host/.test(c)); hosts.sort((a, b) => (isPrivateV4(a) ? -1 : 0) - (isPrivateV4(b) ? -1 : 0)); const srflx = udp.find((c) => /typ srflx/.test(c)); const out = [...hosts.slice(0, 2), srflx].filter(Boolean); return out.length ? out : udp.slice(0, 2); }
 function compact(sdp) {
   const p = parseSdp(sdp); const cands = pickCandidates(p.candidates);
   const lines = [`F${p.fingerprint}`, `S${p.setup}`, `U${p.iceUfrag}`, `P${p.icePwd}`, `M${p.mid}`, ...cands.map((c) => `C${c}`)];

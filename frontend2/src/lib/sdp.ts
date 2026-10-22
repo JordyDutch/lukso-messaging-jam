@@ -64,6 +64,18 @@ function isLoopback(c: string): boolean {
 function isMdns(c: string): boolean {
   return candAddr(c).endsWith('.local');
 }
+/**
+ * True for an RFC1918 private IPv4 address (10/8, 172.16/12, 192.168/16).
+ * When both peers sit on the same private network (e.g. a shared VPN subnet),
+ * their private host candidates connect directly, so we float those first.
+ */
+function isPrivateV4(c: string): boolean {
+  const a = candAddr(c);
+  if (/^10\./.test(a)) return true;
+  if (/^192\.168\./.test(a)) return true;
+  const m = a.match(/^172\.(\d+)\./);
+  return !!m && Number(m[1]) >= 16 && Number(m[1]) <= 31;
+}
 
 /**
  * Keep the routable host + first srflx UDP candidate; drop tcp/IPv6/loopback.
@@ -75,10 +87,10 @@ function pickCandidates(cands: string[]): string[] {
     (c) => /\budp\b/i.test(c) && !isIpv6(c) && !isLoopback(c) && !isMdns(c),
   );
   const hosts = udp.filter((c) => /typ host/.test(c));
-  // Prefer a VPN (10.x.0.x) host first — on this deployment both peers share the
-  // WireGuard subnet, so that pair connects directly. Keep up to two hosts + the
-  // first srflx; all of this still fits the 1024 B DM budget comfortably.
-  hosts.sort((a, b) => (candAddr(a).startsWith('10.x.') ? -1 : 0) - (candAddr(b).startsWith('10.x.') ? -1 : 0));
+  // Prefer a private-network (RFC1918) host first — when both peers share a
+  // private subnet (e.g. a common VPN), that pair connects directly. Keep up to
+  // two hosts + the first srflx; all of this still fits the 1024 B DM budget.
+  hosts.sort((a, b) => (isPrivateV4(a) ? -1 : 0) - (isPrivateV4(b) ? -1 : 0));
   const srflx = udp.find((c) => /typ srflx/.test(c));
   const out = [...hosts.slice(0, 2), srflx].filter(Boolean) as string[];
   // Fall back to whatever UDP we have if the typed filter found nothing.
