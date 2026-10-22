@@ -2,7 +2,7 @@
 // Type-3 capability. Tiny global store + React hook so the composer and the DM
 // box share one setting without threading props through the whole tree.
 import { useEffect, useState } from 'react';
-import { DEFAULT_TRANSPORT, type Transport } from './config';
+import { DEFAULT_TRANSPORT, BLOBS_ENABLED, type Transport } from './config';
 import { probeType3, type Type3Support } from './blob';
 import { ethers } from 'ethers';
 
@@ -15,6 +15,9 @@ export function getTransport(): Transport {
   return current;
 }
 export function setTransport(t: Transport) {
+  // Blob lane is hidden entirely when no relayer is configured — never let
+  // anything (UI, restored state) select it.
+  if (t === 'blob' && !BLOBS_ENABLED) t = 'text';
   if (t === current) return;
   current = t;
   emit();

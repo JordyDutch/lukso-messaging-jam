@@ -131,10 +131,23 @@ export const BEACON_URL: string =
  * always handles BOTH lanes regardless of this setting.
  */
 export type Transport = 'blob' | 'text';
-export const DEFAULT_TRANSPORT: Transport =
-  ((import.meta.env?.VITE_DEFAULT_TRANSPORT as string | undefined) === 'text'
+
+/**
+ * Is the blob lane AVAILABLE as a posting option at all? Gated on a configured
+ * blob relayer: without VITE_BLOB_RELAYER_URL there is nothing to carry a blob,
+ * so the whole feature is hidden and Text is the only lane. (Reading still
+ * handles already-posted blobs regardless — this only governs NEW posts / the
+ * UI toggle.) Set VITE_BLOBS_ENABLED=0 to force-hide it even with a relayer.
+ */
+export const BLOBS_ENABLED: boolean =
+  !!(import.meta.env?.VITE_BLOB_RELAYER_URL as string | undefined) &&
+  (import.meta.env?.VITE_BLOBS_ENABLED as string | undefined) !== '0';
+
+export const DEFAULT_TRANSPORT: Transport = !BLOBS_ENABLED
+  ? 'text'
+  : (import.meta.env?.VITE_DEFAULT_TRANSPORT as string | undefined) === 'text'
     ? 'text'
-    : 'blob');
+    : 'blob';
 
 /**
  * LSP25 blob RELAYER endpoint (optional). SIGNATURE-first model (relay.ts): the

@@ -39,7 +39,7 @@ import {
   mergeConversations,
   type Conversation,
 } from '../lib/conversations';
-import { EXPLORER, ipfsToHttp } from '../lib/config';
+import { EXPLORER, ipfsToHttp, BLOBS_ENABLED } from '../lib/config';
 import { ethers } from 'ethers';
 import {
   P2pDriver,
@@ -700,32 +700,53 @@ function ConvRow({
 }
 
 /**
- * TransportToggle — pick the lane for NEW posts. Blob default (body in an
- * ephemeral EIP-4844 blob, hash on-chain); Text = permanent calldata lane.
+ * TransportToggle — pick the lane for NEW posts.
+ *   🫧 Blob  = default / cheap / promoted. Body rides an ephemeral EIP-4844
+ *              blob (~18 days on the beacon), only its hash is anchored forever.
+ *              After that it survives only in your cache or a 3rd-party blob
+ *              archive (possibly paywalled, Slack-style). Hidden entirely when
+ *              no blob relayer is configured (config.BLOBS_ENABLED).
+ *   📝 Text  = premium / permanent. Body lives in calldata forever — the
+ *              unforgettable lane; costs more gas.
  */
 function TransportToggle() {
   const { transport, setTransport, type3 } = useTransport();
   const blobBlocked = type3 === 'no';
+
+  // No relayer → blobs are off; Text is the only lane. Nothing to toggle, so
+  // show a quiet "permanent" badge instead of a dead single-button segment.
+  if (!BLOBS_ENABLED) {
+    return (
+      <div className="transport small">
+        <span className="lane-note" title="Posts live in calldata, permanently on-chain.">
+          📝 Permanent posts — on-chain forever
+        </span>
+      </div>
+    );
+  }
+
   return (
     <div className="transport small">
       <div className="seg">
         <button
           className={transport === 'blob' ? 'seg-on' : ''}
           disabled={blobBlocked}
-          title="Body in an EIP-4844 blob (ephemeral ~18d); only its hash is anchored on-chain."
+          title="Cheap & default. Body rides an EIP-4844 blob (~18 days), then lives only in your cache or a 3rd-party archive. Just its hash is anchored on-chain."
           onClick={() => setTransport('blob')}
-        >🫧 Blob</button>
+        >🫧 Blob · cheap</button>
         <button
           className={transport === 'text' ? 'seg-on' : ''}
-          title="Body in calldata + event. Permanent on-chain."
+          title="Premium & permanent. Body lives in calldata forever — the unforgettable lane. Costs more gas."
           onClick={() => setTransport('text')}
-        >📝 Text</button>
+        >📝 Text · forever</button>
       </div>
-      {blobBlocked && (
-        <div className="muted" style={{ marginTop: 4 }}>
-          Wallet can’t sign blob (Type-3) yet — using Text.
-        </div>
-      )}
+      <div className="muted" style={{ marginTop: 4 }}>
+        {blobBlocked
+          ? 'Wallet can’t sign blob (Type-3) yet — using Text.'
+          : transport === 'blob'
+            ? '🫧 Cheap & fleeting — gone in ~18 days unless you (or an archive) keep it.'
+            : '📝 Premium & permanent — an unforgettable post, on-chain forever.'}
+      </div>
     </div>
   );
 }
@@ -1552,7 +1573,7 @@ function DmPane({
           </button>
           <span className="muted">
             {encrypt
-              ? 'Only you two can read it.'
+              ? 'Only you two can read it — still, don’t put real secrets on a public chain.'
               : 'Anyone can read this — but no key needed, and it still threads here.'}
           </span>
         </div>
@@ -1679,11 +1700,15 @@ function P2pPanel({
   return (
     <div className="p2p">
       <div className="p2phead">
-        <span className="small muted">⚡ Off-chain channel (WebRTC, bootstrapped via this encrypted DM)</span>
+        <span className="small muted">
+          🛡️ Tunneled — ultra-secure, direct peer-to-peer (WebRTC, bootstrapped
+          via this encrypted DM). Call, video &amp; chat privately off-chain;
+          nothing is recorded and there’s no gas cost while the tunnel is up.
+        </span>
         <span className={`p2pstatus ${status}`}>{statusLabel(status)}</span>
         {!active ? (
-          <button className="link" disabled={!ready} onClick={call} title={ready ? '' : 'both keys must be announced first'}>
-            Go off-chain →
+          <button className="link" disabled={!ready} onClick={call} title={ready ? 'Open a private, off-chain, zero-cost tunnel' : 'both keys must be announced first'}>
+            Open tunnel →
           </button>
         ) : (
           <button className="link" onClick={hangup}>Hang up</button>
@@ -1698,7 +1723,7 @@ function P2pPanel({
       {connected && (
         <div className="p2pchat">
           <ul className="p2plog">
-            {log.length === 0 && <li className="muted small">Channel open — messages below are direct P2P, no chain.</li>}
+            {log.length === 0 && <li className="muted small">Tunnel open — messages below are direct P2P, off-chain, zero cost.</li>}
             {log.map((m, i) => (
               <li key={i} className={m.me ? 'p2pmsg mine' : 'p2pmsg'}>
                 <span className="mono small">{m.me ? 'you' : peer.name}:</span> {m.text}
