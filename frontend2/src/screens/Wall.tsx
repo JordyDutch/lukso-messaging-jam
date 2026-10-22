@@ -1,10 +1,18 @@
-// Wall.tsx — the feed + composer. Two modes:
-//   * Public  : plaintext post, optional @tag (mention a UP). Visible to all.
-//   * DM       : encrypted post to a chosen peer; threaded; locked until both
-//                sides announced their conv key.
+// Wall.tsx — UP Dawg messenger, WhatsApp-style layout.
 //
-// Left: tabs = "Wall" (public feed) + one tab per peer (DM thread).
-// Right: the selected feed/thread + a composer appropriate to the tab.
+// Shell: a two-pane messenger.
+//   * LEFT  (chat list): UpDog logo, a name/address search that autocompletes
+//     people to DM via the Envio indexer, section tabs (Chats · Wall · Mentions
+//     · Discover) and the persistent conversation list.
+//   * RIGHT (thread)   : the selected view. A DM shows a chat header with
+//     msg · call · videocall actions (calls disabled — "coming soon"), then the
+//     thread + composer. Public / Mentions / Discover render their panes.
+//
+// Mobile: single-pane swap. The list is shown by default; opening a chat slides
+// the thread over the full width with a ‹ back arrow. Driven by `mobilePane`.
+//
+// Names: everywhere a peer appears we show the LSP3 profile name (names.ts)
+// rather than a raw address, falling back to `0xabcd…1234#HASH`.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../state/app';
 import {
@@ -25,7 +33,13 @@ import { convPubOf } from '../lib/registry';
 import { threadIdFor } from '../lib/crypto';
 import { resolveName, nameOf, upLabel, type ProfileHit } from '../lib/names';
 import { watchRoster, type RosterEntry } from '../lib/roster';
-import { EXPLORER, KNOWN_PEERS } from '../lib/config';
+import {
+  loadConversations,
+  saveConversations,
+  mergeConversations,
+  type Conversation,
+} from '../lib/conversations';
+import { EXPLORER } from '../lib/config';
 import { ethers } from 'ethers';
 import {
   P2pDriver,
@@ -35,7 +49,7 @@ import {
   type P2pStatus,
 } from '../lib/p2p';
 
-type Tab =
+type View =
   | { kind: 'public' }
   | { kind: 'mentions' }
   | { kind: 'people' }
@@ -44,12 +58,40 @@ type Tab =
 const ZERO = '0x0000000000000000000000000000000000000000';
 
 /**
+ * UpDog logo — inline SVG wordmark (a dog with a chat-bubble ear). Kept inline
+ * so the static bundle needs no asset round-trip. `size` scales it.
+ */
+function UpDogLogo({ size = 28 }: { size?: number }) {
+  return (
+    <span className="brand" aria-label="UP Dawg">
+      <svg width={size} height={size} viewBox="0 0 48 48" fill="none" aria-hidden="true">
+        <defs>
+          <linearGradient id="udg" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stopColor="#ff4785" />
+            <stop offset="1" stopColor="#8a5cff" />
+          </linearGradient>
+        </defs>
+        {/* chat bubble */}
+        <path
+          d="M8 10a6 6 0 0 1 6-6h20a6 6 0 0 1 6 6v16a6 6 0 0 1-6 6H18l-8 8V32a6 6 0 0 1-2-4.5V10Z"
+          fill="url(#udg)"
+        />
+        {/* dog face */}
+        <circle cx="19" cy="17" r="2.2" fill="#0d1117" />
+        <circle cx="29" cy="17" r="2.2" fill="#0d1117" />
+        <path d="M20 23c1.6 1.6 6.4 1.6 8 0" stroke="#0d1117" strokeWidth="2" strokeLinecap="round" />
+        {/* floppy ears */}
+        <path d="M10 8c-2 3-2 7 1 9 1-3 1-6-1-9Z" fill="#8a5cff" />
+        <path d="M38 8c2 3 2 7-1 9-1-3-1-6 1-9Z" fill="#8a5cff" />
+      </svg>
+      <span className="brandname">UP&nbsp;Dawg</span>
+    </span>
+  );
+}
+
+/**
  * useName — reverse-resolve a UP address to its human-readable `name#HASH`
- * label (cached in names.ts). `name#HASH` (e.g. `alice#0F41`) is the LUKSO
- * disambiguation convention: the first 4 hex chars after 0x, uppercased. When
- * the profile has no LSP3 name it falls back to `0xabcd…1234#HASH` so there is
- * always a stable, indexable handle (not just a bare short address). Returns ''
- * for the zero address.
+ * label (cached in names.ts). Returns '' for the zero address.
  */
 function useName(address: string | null | undefined): string {
   const [name, setName] = useState<string | null>(null);
@@ -77,13 +119,24 @@ function Who({ address }: { address: string }) {
   );
 }
 
+/** A circular avatar showing the first letter of the resolved name / address. */
+function Avatar({ address, label }: { address: string; label?: string }) {
+  const resolved = useName(address);
+  const text = (label || resolved || address).replace(/^@/, '');
+  const ch = text.trim()[0]?.toUpperCase() ?? '?';
+  // deterministic hue from the address so each peer has a stable colour
+  const hue = parseInt(address.slice(2, 8), 16) % 360;
+  return (
+    <span className="avatar" style={{ background: `hsl(${hue} 55% 42%)` }}>
+      {ch}
+    </span>
+  );
+}
+
 export function Wall() {
   const { state, dispatch } = useApp();
   const up = state.up!;
 
-  // Resolve the connected UP's LSP3 name once: `myLabel` is the full name#hash
-  // for display, `myRawName` is the bare LSP3 name (or '') embedded in the
-  // author proof of relayed posts.
   const myLabel = useName(up.address);
   const [myRawName, setMyRawName] = useState<string>('');
   useEffect(() => {
@@ -92,27 +145,21 @@ export function Wall() {
     return () => { live = false; };
   }, [up.address]);
 
-  // Relay context for the gas-less blob lane (AUTHOR-SIGNATURE model, Option B,
-  // see relay.ts). The dApp never needs the controller EOA: the extension
-  // personal_signs a canonical message binding the post to this UP, and the
-  // relayer recovers the signer, verifies it controls the UP, and posts the
-  // blob as itself with the author proof (UP + name + signature) in `meta`.
-  // `upName` is the resolved LSP3 name, carried for display on read. Panes
-  // attach their own `onSign` diagnostic so the UI can show exactly what the
-  // extension did when asked to sign.
   const relay = useMemo<RelayCtx>(
     () => ({ up: up.address, upName: myRawName }),
     [up, myRawName],
   );
 
   const [raw, setRaw] = useState<WallPost[]>([]);
-  // Hydrate the decoded feed from the last session's snapshot so re-entering the
-  // dApp shows posts INSTANTLY — no waiting on the ~90k-block poller scan. The
-  // poller then extends/refines this in the background.
   const [decoded, setDecoded] = useState<WallPost[]>(() => loadCachedFeed(up.address));
-  const [tab, setTab] = useState<Tab>({ kind: 'public' });
+  const [view, setView] = useState<View>({ kind: 'public' });
+  // Which pane is showing on NARROW screens. On wide screens both show at once.
+  const [mobilePane, setMobilePane] = useState<'list' | 'thread'>('list');
   const [peerAnnounced, setPeerAnnounced] = useState<Record<string, boolean>>({});
   const [roster, setRoster] = useState<RosterEntry[]>([]);
+
+  // persistent conversation list (hydrated synchronously for instant paint)
+  const [convs, setConvs] = useState<Conversation[]>(() => loadConversations(up.address));
 
   // subscribe to the whole wall once
   useEffect(() => {
@@ -121,35 +168,16 @@ export function Wall() {
     return () => off?.();
   }, []);
 
-  // subscribe to the announced-UP directory (ConvPubAnnounced) once
+  // subscribe to the announced-UP directory once
   useEffect(() => {
     let off: (() => void) | undefined;
     watchRoster(setRoster).then((unsub) => (off = unsub)).catch(() => {});
     return () => off?.();
   }, []);
 
-  // decode (and decrypt what we can) whenever raw changes.
-  //
-  // Depend ONLY on `raw` and the UP *address* (a stable string) — NOT on
-  // `up.convPriv` (a Uint8Array) or the `up` object, whose references change on
-  // every app-context re-render (poller/roster/announce dispatches). A fresh
-  // reference each render would re-fire this effect, and its cleanup cancels the
-  // in-flight decode (`live=false`) before it reaches setDecoded. A full feed
-  // decode is slow (one beacon fetch per blob), so under that thrash it NEVER
-  // completes → `decoded` stays empty → the wall shows "No public posts yet"
-  // even though every body recovers. The convPriv for a given address is fixed,
-  // so reading it fresh inside the effect is safe. (Blank-wall fix 2026-10-22.)
+  // decode whenever raw changes (streaming, newest-first). See blank-wall note.
   const convPriv = up.convPriv;
   useEffect(() => {
-    // STREAMING decode: decodePosts fires `onPost` as each post decodes
-    // (newest-first), so the wall fills in one post at a time instead of
-    // appearing all-at-once after a long wait. Each post is merged into
-    // `decoded` by id (last-write-wins per id), so the user's own just-posted
-    // blob arriving mid-decode simply upserts rather than aborting the pass.
-    // Recovered bodies are cached + persisted to localStorage, so re-entering
-    // the dApp renders cached posts immediately without re-fetching sidecars.
-    // No cleanup cancellation: a superseded pass is cheap (cache hits) and only
-    // ever upserts, and posts are append-only so merged state never shrinks.
     const upsert = (p: WallPost) =>
       setDecoded((prev) => {
         const i = prev.findIndex((x) => x.id === p.id);
@@ -163,165 +191,352 @@ export function Wall() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [raw, up.address]);
 
-  // check announce status for known peers (for DM gating)
+  const meLc = up.address.toLowerCase();
+
+  // merged conversation list (persisted + known peers + decoded threads),
+  // newest-first. Reverse-resolution to @name happens per-row in ConvRow.
+  const conversations = useMemo(
+    () => mergeConversations(up.address, convs, decoded),
+    [up.address, convs, decoded],
+  );
+
+  // announce status for everyone in the conversation list (DM gating)
   useEffect(() => {
-    KNOWN_PEERS.forEach(async (p) => {
+    conversations.forEach(async (c) => {
+      const k = c.address.toLowerCase();
+      if (k in peerAnnounced) return;
       try {
-        const v = await convPubOf(p.address);
-        setPeerAnnounced((s) => ({ ...s, [p.address.toLowerCase()]: !!v }));
+        const v = await convPubOf(c.address);
+        setPeerAnnounced((s) => ({ ...s, [k]: !!v }));
       } catch {
         /* ignore */
       }
     });
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversations]);
 
-  const meLc = up.address.toLowerCase();
-
-  // Public feed, ordered NEWEST → OLDEST (highest id first) for display.
+  // Public feed, newest → oldest.
   const publicFeed = useMemo(
     () => decoded.filter((p) => !p.encrypted).sort((a, b) => b.id - a.id),
     [decoded],
   );
-
-  // Snapshot the public feed so the next visit renders instantly from cache.
-  // Only persist public posts (never decrypted DM text), and only when there is
-  // something to store (don't clobber a good cache with an empty first paint).
   useEffect(() => {
     if (publicFeed.length) saveCachedFeed(up.address, publicFeed);
   }, [publicFeed, up.address]);
 
-  // Public posts that @tag the connected UP — "someone mentioned you".
   const mentions = useMemo(
     () => publicFeed.filter((p) => p.tag.toLowerCase() === meLc && p.from.toLowerCase() !== meLc),
     [publicFeed, meLc],
   );
 
   const dmThread = useMemo(() => {
-    if (tab.kind !== 'dm') return [];
-    const tid = threadIdFor(up.address, tab.address).toLowerCase();
+    if (view.kind !== 'dm') return [];
+    const tid = threadIdFor(up.address, view.address).toLowerCase();
     return decoded.filter(
-      // human DM messages only; P2P signaling envelopes (signal) are hidden here
-      // and consumed by the off-chain channel panel instead.
       (p) => p.encrypted && !p.signal && p.threadId.toLowerCase() === tid,
     );
-  }, [decoded, tab, up.address]);
+  }, [decoded, view, up.address]);
+
+  /** Open a DM: persist the conversation, select it, and (mobile) show thread. */
+  function openDm(name: string, address: string) {
+    setConvs((prev) => {
+      if (prev.some((c) => c.address.toLowerCase() === address.toLowerCase())) return prev;
+      const next = [...prev, { address, name: name || null }];
+      saveConversations(up.address, next);
+      return next;
+    });
+    setView({ kind: 'dm', name: name || short(address), address });
+    setMobilePane('thread');
+  }
+
+  /** Select a non-DM section view (Wall/Mentions/Discover). */
+  function openSection(v: View) {
+    setView(v);
+    setMobilePane('thread');
+  }
+
+  const selectedDm = view.kind === 'dm' ? view.address.toLowerCase() : null;
 
   return (
-    <div className="wall">
-      <aside className="sidebar">
-        <div className="me">
-          <div className="small muted">connected</div>
-          <div className="mono small" title={up.address}>{myLabel || short(up.address)}</div>
-          <div className="small">
-            {state.announced ? (
-              <span className="ok">● key announced</span>
-            ) : (
-              <button className="link" onClick={() => dispatch({ type: 'needAnnounce' })}>
-                announce key →
-              </button>
-            )}
+    <div className={`messenger pane-${mobilePane}`}>
+      <aside className="chatlist">
+        <header className="brandbar">
+          <UpDogLogo />
+          <button className="iconbtn" title="Announce / key status"
+            onClick={() => dispatch({ type: 'needAnnounce' })}>
+            {state.announced ? '🔑' : '⚠️'}
+          </button>
+        </header>
+
+        <div className="mecard">
+          <Avatar address={up.address} />
+          <div className="meid">
+            <div className="mename" title={up.address}>{myLabel || short(up.address)}</div>
+            <div className="small">
+              {state.announced ? (
+                <span className="ok">● key announced</span>
+              ) : (
+                <button className="link" onClick={() => dispatch({ type: 'needAnnounce' })}>
+                  announce key →
+                </button>
+              )}
+            </div>
           </div>
           <TransportToggle />
         </div>
-        <nav className="tabs">
-          <button
-            className={tab.kind === 'public' ? 'tab active' : 'tab'}
-            onClick={() => setTab({ kind: 'public' })}
-          >
-            🧱 Wall (public)
+
+        <NewChatSearch openDm={openDm} />
+
+        <nav className="sectiontabs">
+          <button className={view.kind === 'public' ? 'stab active' : 'stab'}
+            onClick={() => openSection({ kind: 'public' })}>🧱 Wall</button>
+          <button className={view.kind === 'mentions' ? 'stab active' : 'stab'}
+            onClick={() => openSection({ kind: 'mentions' })}>
+            @ Mentions{mentions.length > 0 && <span className="badge">{mentions.length}</span>}
           </button>
-          <button
-            className={tab.kind === 'mentions' ? 'tab active' : 'tab'}
-            onClick={() => setTab({ kind: 'mentions' })}
-          >
-            @ Mentions
-            {mentions.length > 0 && <span className="badge">{mentions.length}</span>}
+          <button className={view.kind === 'people' ? 'stab active' : 'stab'}
+            onClick={() => openSection({ kind: 'people' })}>
+            🌐 Discover{roster.length > 0 && <span className="badge">{roster.length}</span>}
           </button>
-          <button
-            className={tab.kind === 'people' ? 'tab active' : 'tab'}
-            onClick={() => setTab({ kind: 'people' })}
-          >
-            🌐 Discover
-            {roster.length > 0 && <span className="badge">{roster.length}</span>}
-          </button>
-          {KNOWN_PEERS.map((p) => (
-            <button
-              key={p.address}
-              className={tab.kind === 'dm' && tab.address === p.address ? 'tab active' : 'tab'}
-              onClick={() => setTab({ kind: 'dm', name: p.name, address: p.address })}
-            >
-              🔒 DM {p.name}
-            </button>
-          ))}
         </nav>
+
+        <ul className="convlist">
+          <li className="convsection small muted">Chats</li>
+          {conversations.length === 0 && (
+            <li className="muted empty small">No conversations yet. Search above to DM someone.</li>
+          )}
+          {conversations.map((c) => (
+            <ConvRow
+              key={c.address}
+              conv={c}
+              active={selectedDm === c.address.toLowerCase()}
+              announced={!!peerAnnounced[c.address.toLowerCase()]}
+              onClick={(name) => openDm(name, c.address)}
+            />
+          ))}
+        </ul>
       </aside>
 
-      <section className="feed">
-        {tab.kind === 'public' ? (
-          <PublicPane me={meLc} up={up} feed={publicFeed} relay={relay} />
-        ) : tab.kind === 'mentions' ? (
-          <MentionsPane me={meLc} feed={mentions} />
-        ) : tab.kind === 'people' ? (
-          <DiscoverPane
-            me={meLc}
-            roster={roster}
-            openDm={(name, address) => setTab({ kind: 'dm', name, address })}
-          />
+      <section className="threadview">
+        {view.kind === 'public' ? (
+          <SectionHeader title="🧱 Wall" subtitle="Public posts — visible to everyone on-chain"
+            onBack={() => setMobilePane('list')} />
+        ) : view.kind === 'mentions' ? (
+          <SectionHeader title="@ Mentions" subtitle="Public posts that tagged you"
+            onBack={() => setMobilePane('list')} />
+        ) : view.kind === 'people' ? (
+          <SectionHeader title="🌐 Discover" subtitle="Universal Profiles that announced an encryption key"
+            onBack={() => setMobilePane('list')} />
         ) : (
-          <DmPane
-            up={up}
-            peer={tab}
-            thread={dmThread}
-            allPosts={decoded}
-            meAnnounced={state.announced}
-            peerAnnounced={!!peerAnnounced[tab.address.toLowerCase()]}
-            relay={relay}
-          />
+          <ChatHeader peer={view} connected={false} onBack={() => setMobilePane('list')} />
         )}
+
+        <div className="threadbody">
+          {view.kind === 'public' ? (
+            <PublicPane me={meLc} up={up} feed={publicFeed} relay={relay} />
+          ) : view.kind === 'mentions' ? (
+            <MentionsPane me={meLc} feed={mentions} />
+          ) : view.kind === 'people' ? (
+            <DiscoverPane me={meLc} roster={roster} openDm={openDm} />
+          ) : (
+            <DmPane
+              up={up}
+              peer={view}
+              thread={dmThread}
+              allPosts={decoded}
+              meAnnounced={state.announced}
+              peerAnnounced={!!peerAnnounced[view.address.toLowerCase()]}
+              relay={relay}
+            />
+          )}
+        </div>
       </section>
     </div>
   );
 }
 
 /**
- * TransportToggle — pick the lane for NEW posts. Blob is the default: the body
- * rides in an ephemeral EIP-4844 blob and only its hash is anchored on-chain
- * (cheap, ~18-day body). Text is the legacy calldata+event lane (permanent).
- * Reading always handles both. If the wallet can't sign Type-3, blob is
- * disabled and we explain why.
+ * ChatHeader — the WhatsApp-style header above a DM thread: back arrow (mobile),
+ * avatar + resolved name + announce status, and the msg · call · videocall
+ * action row. Audio & video calls are DISABLED ("coming soon"); `msg` is the
+ * active mode. `connected` reflects the live P2P channel state (reserved for
+ * when calls are enabled; today it only tints the msg button).
+ */
+function ChatHeader({
+  peer,
+  connected,
+  onBack,
+}: {
+  peer: { name: string; address: string };
+  connected: boolean;
+  onBack: () => void;
+}) {
+  const label = useName(peer.address);
+  const display = label || peer.name || short(peer.address);
+  return (
+    <header className="chathead">
+      <button className="backbtn" onClick={onBack} aria-label="Back to chats">‹</button>
+      <Avatar address={peer.address} label={peer.name} />
+      <div className="chatid">
+        <div className="chatname">{display}</div>
+        <a className="mono small muted" href={`${EXPLORER}/address/${peer.address}`}
+          target="_blank" rel="noreferrer">{short(peer.address)} ↗</a>
+      </div>
+      <div className="callnav">
+        <button className={`navbtn active`} title="Messages">💬</button>
+        <button className="navbtn" disabled title="Voice call — coming soon">📞</button>
+        <button className="navbtn" disabled title="Video call — coming soon">🎥</button>
+      </div>
+    </header>
+  );
+}
+
+/** Header for the non-DM section panes, with a mobile back arrow. */
+function SectionHeader({ title, subtitle, onBack }: { title: string; subtitle: string; onBack: () => void }) {
+  return (
+    <header className="chathead">
+      <button className="backbtn" onClick={onBack} aria-label="Back to chats">‹</button>
+      <div className="chatid">
+        <div className="chatname">{title}</div>
+        <div className="small muted">{subtitle}</div>
+      </div>
+    </header>
+  );
+}
+
+/**
+ * NewChatSearch — the "start a new conversation" box at the top of the chat
+ * list. Typing a UP name queries the Envio indexer (names.ts resolveName) and
+ * suggests matching profiles to DM; pasting a 0x address jumps straight to it.
+ * Picking a hit opens (and persists) a DM conversation.
+ */
+function NewChatSearch({ openDm }: { openDm: (name: string, address: string) => void }) {
+  const [q, setQ] = useState('');
+  const [hits, setHits] = useState<ProfileHit[]>([]);
+  const [searching, setSearching] = useState(false);
+  const deb = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function onSearch(v: string) {
+    setQ(v);
+    if (deb.current) clearTimeout(deb.current);
+    if (!v.trim()) {
+      setHits([]);
+      setSearching(false);
+      return;
+    }
+    if (/^0x[0-9a-fA-F]{40}$/.test(v.trim())) {
+      setHits([{ address: ethers.getAddress(v.trim()), name: null, avatar: null }]);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    deb.current = setTimeout(async () => {
+      try {
+        setHits(await resolveName(v));
+      } catch {
+        setHits([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 300);
+  }
+
+  function pick(h: ProfileHit) {
+    openDm(h.name ?? '', h.address);
+    setQ('');
+    setHits([]);
+  }
+
+  return (
+    <div className="newchat">
+      <input
+        className="searchbox"
+        placeholder="🔍  New chat — type a UP @name or paste 0x…"
+        value={q}
+        onChange={(e) => onSearch(e.target.value)}
+      />
+      {q.trim() !== '' && (
+        <ul className="searchhits">
+          {searching && <li className="muted empty small">searching…</li>}
+          {!searching && hits.length === 0 && (
+            <li className="muted empty small">No profile found for “{q.trim()}”.</li>
+          )}
+          {hits.map((h) => (
+            <li key={h.address}>
+              <button className="hitrow" onClick={() => pick(h)}>
+                <Avatar address={h.address} label={h.name ?? undefined} />
+                <span className="hitid">
+                  <span className="hitname">{h.name ? '@' + h.name : short(h.address)}</span>
+                  <span className="mono small muted">{short(h.address)}</span>
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** One row in the conversation list: avatar, resolved name, preview, status dot. */
+function ConvRow({
+  conv,
+  active,
+  announced,
+  onClick,
+}: {
+  conv: Conversation;
+  active: boolean;
+  announced: boolean;
+  onClick: (name: string) => void;
+}) {
+  const resolved = useName(conv.address);
+  const display = resolved || (conv.name ? upLabel(conv.address, conv.name) : short(conv.address));
+  const bare = conv.name ?? (resolved.includes('#') ? resolved.split('#')[0] : '');
+  return (
+    <li>
+      <button className={active ? 'convrow active' : 'convrow'} onClick={() => onClick(bare)}>
+        <Avatar address={conv.address} label={conv.name ?? undefined} />
+        <span className="convmeta">
+          <span className="convtop">
+            <span className="convname">{display}</span>
+            {conv.ts ? <span className="convts small muted">{fmtShort(conv.ts)}</span> : null}
+          </span>
+          <span className="convpreview small muted">
+            {conv.preview || (announced ? 'Ready — encrypted DM' : 'Tap to open')}
+          </span>
+        </span>
+        <span className={announced ? 'statusdot on' : 'statusdot'} title={announced ? 'announced key' : 'has not announced'} />
+      </button>
+    </li>
+  );
+}
+
+/**
+ * TransportToggle — pick the lane for NEW posts. Blob default (body in an
+ * ephemeral EIP-4844 blob, hash on-chain); Text = permanent calldata lane.
  */
 function TransportToggle() {
   const { transport, setTransport, type3 } = useTransport();
   const blobBlocked = type3 === 'no';
   return (
-    <div className="transport small" style={{ marginTop: 8 }}>
-      <div className="muted" style={{ marginBottom: 2 }}>transport</div>
+    <div className="transport small">
       <div className="seg">
         <button
           className={transport === 'blob' ? 'seg-on' : ''}
           disabled={blobBlocked}
-          title="Body in an EIP-4844 blob (ephemeral ~18d); only its hash is anchored on-chain. Cheap."
+          title="Body in an EIP-4844 blob (ephemeral ~18d); only its hash is anchored on-chain."
           onClick={() => setTransport('blob')}
-        >
-          🫧 Blob
-        </button>
+        >🫧 Blob</button>
         <button
           className={transport === 'text' ? 'seg-on' : ''}
           title="Body in calldata + event. Permanent on-chain."
           onClick={() => setTransport('text')}
-        >
-          📝 Text
-        </button>
+        >📝 Text</button>
       </div>
       {blobBlocked && (
         <div className="muted" style={{ marginTop: 4 }}>
-          Your wallet can’t sign blob (Type-3) txs yet — using Text. Blob posting
-          is pending wallet/relay support.
-        </div>
-      )}
-      {!blobBlocked && transport === 'blob' && (
-        <div className="muted" style={{ marginTop: 4 }}>
-          Bodies expire (~18d); the hash stays on-chain forever.
+          Wallet can’t sign blob (Type-3) yet — using Text.
         </div>
       )}
     </div>
@@ -341,24 +556,13 @@ function LaneBadge({ p }: { p: WallPost }) {
 /** Render a post body, handling an expired (pruned) blob body + locked DMs. */
 function Body({ p }: { p: WallPost }) {
   if (p.pruned) {
-    return (
-      <em className="muted">
-        🫧 blob body expired — only its on-chain hash remains
-      </em>
-    );
+    return <em className="muted">🫧 blob body expired — only its on-chain hash remains</em>;
   }
   if (p.locked) return <em className="muted">🔒 encrypted — cannot decrypt</em>;
   return <>{p.text}</>;
 }
 
-/**
- * SignPanel — SIGNATURE TEST readout. Shows exactly what the UP extension did
- * when asked to sign the LSP25 relay digest: the method tried, the address it
- * signed with, the raw signature, and who it ecrecovers to. This is the one
- * thing only a real browser confirms (relay.ts §SIGNATURE FORMAT). A green
- * "recovered" that equals a controller of the UP means the signature-relay
- * architecture works end-to-end against this extension.
- */
+/** SignPanel — SIGNATURE TEST readout (what the UP extension did when signing). */
 function SignPanel({ outcome }: { outcome: SignOutcome | null }) {
   if (!outcome) return null;
   const row = (k: string, v: string) => (
@@ -444,6 +648,24 @@ function PublicPane({ me, up, feed, relay }: { me: string; up: ReturnType<typeof
 
   return (
     <>
+      <ul className="posts">
+        {feed.length === 0 && <li className="muted empty">No public posts yet. Be the first.</li>}
+        {feed.map((p) => (
+          <li key={p.id} className={p.from.toLowerCase() === me ? 'post mine' : 'post'}>
+            <div className="posthead">
+              <Who address={p.from} />
+              {p.tag !== ZERO && (
+                <span className={p.tag.toLowerCase() === me ? 'tagged tagme' : 'tagged'}> → <Tag address={p.tag} /></span>
+              )}
+              <span className="ts">{fmt(p.timestamp)}</span>
+              <LaneBadge p={p} />
+            </div>
+            <div className="body"><Body p={p} /></div>
+            <a className="small muted" href={`${EXPLORER}/tx/${p.txHash}`} target="_blank" rel="noreferrer">on-chain ↗</a>
+          </li>
+        ))}
+      </ul>
+
       <div className="composer">
         <div className="small muted">Public post — visible to everyone on-chain.</div>
         <textarea
@@ -458,7 +680,7 @@ function PublicPane({ me, up, feed, relay }: { me: string; up: ReturnType<typeof
             value={tagInput}
             onChange={(e) => onTag(e.target.value)}
           />
-          {tag && <span className="pill">@{tag.label} ✕ <button className="link" onClick={() => { setTag(null); setTagInput(''); }}>clear</button></span>}
+          {tag && <span className="pill">@{tag.label} <button className="link" onClick={() => { setTag(null); setTagInput(''); }}>clear</button></span>}
         </div>
         {hits.length > 0 && (
           <ul className="hits">
@@ -477,24 +699,6 @@ function PublicPane({ me, up, feed, relay }: { me: string; up: ReturnType<typeof
         {err && <p className="error">{err}</p>}
         <SignPanel outcome={sig} />
       </div>
-
-      <ul className="posts">
-        {feed.length === 0 && <li className="muted empty">No public posts yet. Be the first.</li>}
-        {feed.map((p) => (
-          <li key={p.id} className={p.from.toLowerCase() === me ? 'post mine' : 'post'}>
-            <div className="posthead">
-              <Who address={p.from} />
-              {p.tag !== ZERO && (
-                <span className={p.tag.toLowerCase() === me ? 'tagged tagme' : 'tagged'}> → <Tag address={p.tag} /></span>
-              )}
-              <span className="ts">{fmt(p.timestamp)}</span>
-              <LaneBadge p={p} />
-            </div>
-            <div className="body"><Body p={p} /></div>
-            <a className="small muted" href={`${EXPLORER}/tx/${p.txHash}`} target="_blank" rel="noreferrer">on-chain ↗</a>
-          </li>
-        ))}
-      </ul>
     </>
   );
 }
@@ -505,45 +709,33 @@ function Tag({ address }: { address: string }) {
   return <>{label || short(address)}</>;
 }
 
-/**
- * MentionsPane — every public post that @tags the connected UP, newest first.
- * Surfaces "who mentioned you and what they said", with tagger resolved to @name.
- */
+/** MentionsPane — every public post that @tags the connected UP, newest first. */
 function MentionsPane({ me, feed }: { me: string; feed: WallPost[] }) {
   return (
-    <>
-      <div className="composer">
-        <div className="small muted">
-          @ Mentions — public posts that tagged you. {feed.length} total.
-        </div>
-      </div>
-      <ul className="posts">
-        {feed.length === 0 && (
-          <li className="muted empty">No one has mentioned you yet. When a public post @tags your UP, it shows up here.</li>
-        )}
-        {feed.map((p) => (
-          <li key={p.id} className={p.from.toLowerCase() === me ? 'post mine' : 'post'}>
-            <div className="posthead">
-              <Who address={p.from} />
-              <span className="tagged tagme"> → you</span>
-              <span className="ts">{fmt(p.timestamp)}</span>
-              <LaneBadge p={p} />
-            </div>
-            <div className="body"><Body p={p} /></div>
-            <a className="small muted" href={`${EXPLORER}/tx/${p.txHash}`} target="_blank" rel="noreferrer">on-chain ↗</a>
-          </li>
-        ))}
-      </ul>
-    </>
+    <ul className="posts">
+      {feed.length === 0 && (
+        <li className="muted empty">No one has mentioned you yet. When a public post @tags your UP, it shows up here.</li>
+      )}
+      {feed.map((p) => (
+        <li key={p.id} className={p.from.toLowerCase() === me ? 'post mine' : 'post'}>
+          <div className="posthead">
+            <Who address={p.from} />
+            <span className="tagged tagme"> → you</span>
+            <span className="ts">{fmt(p.timestamp)}</span>
+            <LaneBadge p={p} />
+          </div>
+          <div className="body"><Body p={p} /></div>
+          <a className="small muted" href={`${EXPLORER}/tx/${p.txHash}`} target="_blank" rel="noreferrer">on-chain ↗</a>
+        </li>
+      ))}
+    </ul>
   );
 }
 
 /**
- * DiscoverPane — the public directory of UPs that have announced a conversation
- * key (RegistryV3 ConvPubAnnounced). Anyone here is reachable for an encrypted
- * DM / off-chain channel. Name is shown prominently; the UP address and the
- * announced convPub are shown but secondary. Includes a free-text @name/address
- * search so you can jump to anyone, announced or not.
+ * DiscoverPane — the public directory of UPs that announced a conversation key.
+ * Anyone here is reachable for an encrypted DM. Name shown prominently; address
+ * + convPub secondary. Includes a free-text @name/address search.
  */
 function DiscoverPane({
   me,
@@ -579,15 +771,13 @@ function DiscoverPane({
     }, 300);
   }
 
-  // Hide yourself from the announced directory.
   const others = roster.filter((r) => r.address.toLowerCase() !== me);
 
   return (
     <>
       <div className="composer">
         <div className="small muted">
-          🌐 Discover — Universal Profiles that announced an encryption key. Anyone
-          listed can receive an encrypted DM and an off-chain channel. {others.length} announced.
+          🌐 Discover — Universal Profiles that announced an encryption key. {others.length} announced.
         </div>
         <input
           className="input"
@@ -602,13 +792,7 @@ function DiscoverPane({
               <li className="muted empty">No profile found for “{q}”.</li>
             )}
             {hits.map((h) => (
-              <RosterCard
-                key={h.address}
-                address={h.address}
-                presetName={h.name}
-                convPub={null}
-                openDm={openDm}
-              />
+              <RosterCard key={h.address} address={h.address} presetName={h.name} convPub={null} openDm={openDm} />
             ))}
           </ul>
         )}
@@ -622,13 +806,7 @@ function DiscoverPane({
           </li>
         )}
         {others.map((r) => (
-          <RosterCard
-            key={r.address}
-            address={r.address}
-            presetName={null}
-            convPub={r.convPub}
-            openDm={openDm}
-          />
+          <RosterCard key={r.address} address={r.address} presetName={null} convPub={r.convPub} openDm={openDm} />
         ))}
       </ul>
     </>
@@ -647,7 +825,6 @@ function RosterCard({
   convPub: string | null;
   openDm: (name: string, address: string) => void;
 }) {
-  // Prefer the name the search already gave us; else reverse-resolve.
   const resolved = useName(address);
   const name = presetName ? `@${presetName}` : resolved;
   const display = name || short(address);
@@ -655,25 +832,17 @@ function RosterCard({
 
   return (
     <li className="rostercard">
+      <Avatar address={address} label={presetName ?? undefined} />
       <div className="rosterid">
         <span className="rostername">{display}</span>
-        <a
-          className="mono small muted"
-          href={`${EXPLORER}/address/${address}`}
-          target="_blank"
-          rel="noreferrer"
-        >
+        <a className="mono small muted" href={`${EXPLORER}/address/${address}`} target="_blank" rel="noreferrer">
           {short(address)} ↗
         </a>
         {convPub && (
-          <span className="mono small muted" title={`announced conv pubkey: ${convPub}`}>
-            🔑 {short(convPub)}
-          </span>
+          <span className="mono small muted" title={`announced conv pubkey: ${convPub}`}>🔑 {short(convPub)}</span>
         )}
       </div>
-      <button className="btn small" onClick={() => openDm(dmName, address)}>
-        🔒 Message
-      </button>
+      <button className="btn small" onClick={() => openDm(dmName, address)}>🔒 Message</button>
     </li>
   );
 }
@@ -701,6 +870,7 @@ function DmPane({
   const [sig, setSig] = useState<SignOutcome | null>(null);
   const ready = meAnnounced && peerAnnounced;
   const { transport } = useTransport();
+  const peerLabel = useName(peer.address) || peer.name;
 
   async function send() {
     setBusy(true);
@@ -728,49 +898,47 @@ function DmPane({
 
   return (
     <>
-      <div className="dmhead">
-        <h3>🔒 DM with {peer.name}</h3>
-        <div className="small mono">{short(peer.address)}</div>
-        <div className="small">
-          {meAnnounced ? <span className="ok">● you announced</span> : <span className="warn">● you haven't announced</span>}
-          {'  '}
-          {peerAnnounced ? <span className="ok">● {peer.name} announced</span> : <span className="warn">● {peer.name} hasn't announced</span>}
+      {!ready && (
+        <div className="lockbanner small">
+          🔒 Encrypted DM is locked until both parties announce their conversation key.
+          {!meAnnounced && ' Announce yours from the top-left.'}
+          {!peerAnnounced && ` ${peer.name} must connect and announce too.`}
         </div>
-      </div>
+      )}
 
       <P2pPanel up={up} peer={peer} allPosts={allPosts} ready={ready} />
 
-      <ul className="posts">
-        {thread.length === 0 && <li className="muted empty">No messages in this thread yet.</li>}
-        {[...thread].reverse().map((p) => (
-          <li key={p.id} className={p.from.toLowerCase() === meLc ? 'post mine' : 'post'}>
-            <div className="posthead">
-              <span className="mono">{p.from.toLowerCase() === meLc ? 'you' : peer.name}</span>
-              <span className="ts">{fmt(p.timestamp)}</span>
-            </div>
-            <div className="body"><Body p={p} /></div>
-            <a className="small muted" href={`${EXPLORER}/tx/${p.txHash}`} target="_blank" rel="noreferrer">on-chain ↗</a>
-          </li>
-        ))}
+      <ul className="bubbles">
+        {thread.length === 0 && <li className="muted empty">No messages yet. Say hi 👋</li>}
+        {[...thread].reverse().map((p) => {
+          const mine = p.from.toLowerCase() === meLc;
+          return (
+            <li key={p.id} className={mine ? 'bubble mine' : 'bubble'}>
+              <div className="bubbletext"><Body p={p} /></div>
+              <div className="bubblemeta small muted">
+                {fmt(p.timestamp)} · <a href={`${EXPLORER}/tx/${p.txHash}`} target="_blank" rel="noreferrer">on-chain ↗</a>
+              </div>
+            </li>
+          );
+        })}
       </ul>
 
-      <div className="composer">
-        {!ready && (
-          <p className="warn small">
-            Encrypted DM is locked until both parties announce their conversation key.
-            {!meAnnounced && ' Announce yours from the sidebar.'}
-            {!peerAnnounced && ` ${peer.name} must connect and announce too.`}
-          </p>
-        )}
+      <div className="composer dmcomposer">
         <textarea
-          placeholder={ready ? `Encrypted message to ${peer.name}…` : 'Locked until both keys announced'}
+          placeholder={ready ? `Encrypted message to ${peerLabel}…` : 'Locked until both keys announced'}
           value={text}
           onChange={(e) => setText(e.target.value)}
           disabled={!ready}
           maxLength={800}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey && ready && text.trim() && !busy) {
+              e.preventDefault();
+              send();
+            }
+          }}
         />
         <button disabled={!ready || busy || !text.trim()} onClick={send}>
-          {busy ? 'Sealing & posting…' : '🔒 Send encrypted'}
+          {busy ? 'Sealing…' : '🔒 Send'}
         </button>
         {err && <p className="error">{err}</p>}
         <SignPanel outcome={sig} />
@@ -779,15 +947,7 @@ function DmPane({
   );
 }
 
-/**
- * P2pPanel — the off-chain channel, bootstrapped over the encrypted DM.
- *
- * "Go off-chain" posts a sealed WebRTC offer as a Wall DM; the peer's panel sees
- * it in the feed, answers (another DM), and once ICE connects the DataChannel
- * carries chat directly peer-to-peer — no further chain writes. Inbound signaling
- * posts are pulled from the SAME decoded wall feed the DM thread uses, filtered
- * to this peer + the P2P magic, and fed to the driver exactly once each.
- */
+/** P2pPanel — the off-chain channel, bootstrapped over the encrypted DM. */
 function P2pPanel({
   up,
   peer,
@@ -822,7 +982,6 @@ function P2pPanel({
     [up, peer.address],
   );
 
-  // Reset when switching peer tab.
   useEffect(() => {
     driverRef.current?.hangup();
     driverRef.current = null;
@@ -833,7 +992,6 @@ function P2pPanel({
     setErr(null);
   }, [peer.address]);
 
-  // Feed inbound signaling DMs (offers/answers) to the driver, once each.
   useEffect(() => {
     const inbound = allPosts.filter((p) => isInboundSignal(p, up!.address, peer.address));
     for (const p of inbound) {
@@ -843,7 +1001,6 @@ function P2pPanel({
       (async () => {
         try {
           if (!driverRef.current) {
-            // No active call: an inbound offer — auto-answer it.
             driverRef.current = await answerCall(common, body);
           } else {
             await driverRef.current.ingest(body);
@@ -942,4 +1099,13 @@ function short(a: string): string {
 }
 function fmt(unixSec: number): string {
   return new Date(unixSec * 1000).toLocaleString();
+}
+/** Compact timestamp for the conversation list (time today, else date). */
+function fmtShort(unixSec: number): string {
+  const d = new Date(unixSec * 1000);
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  return sameDay
+    ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
