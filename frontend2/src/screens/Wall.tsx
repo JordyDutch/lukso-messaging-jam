@@ -51,6 +51,7 @@ import {
 
 type View =
   | { kind: 'public' }
+  | { kind: 'thread'; rootId: number }
   | { kind: 'mentions' }
   | { kind: 'people' }
   | { kind: 'dm'; name: string; address: string };
@@ -224,6 +225,40 @@ export function Wall() {
     if (publicFeed.length) saveCachedFeed(up.address, publicFeed);
   }, [publicFeed, up.address]);
 
+  // Thread structure, derived once per feed change:
+  //   byId          — every public post by id (for repost embeds + ancestor walk)
+  //   childrenOf    — direct replies to each post id (ascending, oldest-first)
+  //   replyCountOf   — total descendants under each post id (for the "N replies" badge)
+  //   timeline      — what the Wall tab shows: roots only (plain posts + reposts),
+  //                   newest-first. Replies live inside their thread, not the feed.
+  const { byId, childrenOf, replyCountOf, timeline } = useMemo(() => {
+    const byId = new Map<number, WallPost>();
+    for (const p of publicFeed) byId.set(p.id, p);
+    const childrenOf = new Map<number, WallPost[]>();
+    for (const p of publicFeed) {
+      if (p.kind === 'reply' && typeof p.parentId === 'number') {
+        const arr = childrenOf.get(p.parentId) ?? [];
+        arr.push(p);
+        childrenOf.set(p.parentId, arr);
+      }
+    }
+    for (const arr of childrenOf.values()) arr.sort((a, b) => a.id - b.id);
+    // total descendants (memoized walk)
+    const replyCountOf = new Map<number, number>();
+    const countDesc = (id: number): number => {
+      if (replyCountOf.has(id)) return replyCountOf.get(id)!;
+      let n = 0;
+      for (const c of childrenOf.get(id) ?? []) n += 1 + countDesc(c.id);
+      replyCountOf.set(id, n);
+      return n;
+    };
+    for (const p of publicFeed) countDesc(p.id);
+    // timeline = roots: a post is a root unless it is a reply (replies are nested).
+    // Reposts DO appear in the timeline (they re-float content). Newest-first.
+    const timeline = publicFeed.filter((p) => p.kind !== 'reply');
+    return { byId, childrenOf, replyCountOf, timeline };
+  }, [publicFeed]);
+
   const mentions = useMemo(
     () => publicFeed.filter((p) => p.tag.toLowerCase() === meLc && p.from.toLowerCase() !== meLc),
     [publicFeed, meLc],
@@ -249,11 +284,14 @@ export function Wall() {
     setMobilePane('thread');
   }
 
-  /** Select a non-DM section view (Wall/Mentions/Discover). */
+  /** Select a non-DM section view (Wall/Mentions/Discover/thread). */
   function openSection(v: View) {
     setView(v);
     setMobilePane('thread');
   }
+
+  /** Open the focused thread view for a post. */
+  const openThread = (rootId: number) => openSection({ kind: 'thread', rootId });
 
   const selectedDm = view.kind === 'dm' ? view.address.toLowerCase() : null;
 
@@ -319,8 +357,11 @@ export function Wall() {
 
       <section className="threadview">
         {view.kind === 'public' ? (
-          <SectionHeader title="🧱 Wall" subtitle="Public posts — visible to everyone on-chain"
+          <SectionHeader title="🧱 The Wall" subtitle="Everything that happened here — on-chain, newest first"
             onBack={() => setMobilePane('list')} />
+        ) : view.kind === 'thread' ? (
+          <SectionHeader title="🧵 Thread" subtitle="A post and its replies"
+            onBack={() => openSection({ kind: 'public' })} />
         ) : view.kind === 'mentions' ? (
           <SectionHeader title="@ Mentions" subtitle="Public posts that tagged you"
             onBack={() => setMobilePane('list')} />
@@ -333,9 +374,28 @@ export function Wall() {
 
         <div className="threadbody">
           {view.kind === 'public' ? (
-            <PublicPane me={meLc} up={up} feed={publicFeed} relay={relay} />
+            <PublicPane
+              me={meLc}
+              up={up}
+              timeline={timeline}
+              byId={byId}
+              replyCountOf={replyCountOf}
+              relay={relay}
+              openThread={openThread}
+            />
+          ) : view.kind === 'thread' ? (
+            <ThreadPane
+              me={meLc}
+              up={up}
+              rootId={view.rootId}
+              byId={byId}
+              childrenOf={childrenOf}
+              replyCountOf={replyCountOf}
+              relay={relay}
+              openThread={openThread}
+            />
           ) : view.kind === 'mentions' ? (
-            <MentionsPane me={meLc} feed={mentions} />
+            <MentionsPane me={meLc} feed={mentions} openThread={openThread} />
           ) : view.kind === 'people' ? (
             <DiscoverPane me={meLc} roster={roster} openDm={openDm} />
           ) : (
@@ -595,7 +655,210 @@ function SignPanel({ outcome }: { outcome: SignOutcome | null }) {
   );
 }
 
-function PublicPane({ me, up, feed, relay }: { me: string; up: ReturnType<typeof useApp>['state']['up']; feed: WallPost[]; relay: RelayCtx }) {
+type UpState = ReturnType<typeof useApp>['state']['up'];
+
+/**
+ * PublicPane — the Wall timeline. Composer is pinned at the TOP (this is a
+ * broadcast feed, not a chat), then the feed of roots (plain posts + reposts),
+ * newest-first. Replies are nested inside threads, not shown flat here; each
+ * post surfaces a "N replies" affordance that opens the focused thread.
+ */
+function PublicPane({
+  me,
+  up,
+  timeline,
+  byId,
+  replyCountOf,
+  relay,
+  openThread,
+}: {
+  me: string;
+  up: UpState;
+  timeline: WallPost[];
+  byId: Map<number, WallPost>;
+  replyCountOf: Map<number, number>;
+  relay: RelayCtx;
+  openThread: (id: number) => void;
+}) {
+  // Optimistic "reposted by me" set so the 🔁 fills instantly (chain confirms later).
+  const [reposted, setReposted] = useState<Set<number>>(new Set());
+  const { transport } = useTransport();
+
+  async function repost(p: WallPost) {
+    setReposted((s) => new Set(s).add(p.id));
+    try {
+      if (transport === 'blob') {
+        await postPublicBlob(up!.signer, '', { kind: 'repost', parent: p.id }, relay);
+      } else {
+        await postPublic(up!.signer, '', { kind: 'repost', parent: p.id });
+      }
+    } catch {
+      setReposted((s) => { const n = new Set(s); n.delete(p.id); return n; });
+    }
+  }
+
+  return (
+    <>
+      <Composer
+        up={up}
+        relay={relay}
+        placeholder="What's happening on-chain?"
+        cta="Post to the wall"
+        allowTag
+      />
+
+      <ul className="feed">
+        {timeline.length === 0 && (
+          <li className="muted empty">The wall is quiet. Post the first thing that happens here.</li>
+        )}
+        {timeline.map((p) => (
+          <FeedItem
+            key={p.id}
+            post={p}
+            me={me}
+            byId={byId}
+            replies={replyCountOf.get(p.id) ?? 0}
+            reposted={reposted.has(p.id)}
+            onOpenThread={() => openThread(p.id)}
+            onReply={() => openThread(p.id)}
+            onRepost={() => repost(p)}
+          />
+        ))}
+      </ul>
+    </>
+  );
+}
+
+/**
+ * FeedItem — one timeline entry. A plain post renders as a card; a repost
+ * renders a "🔁 reposted" banner wrapping the embedded original. Both expose
+ * the reply / repost / open-thread actions.
+ */
+function FeedItem({
+  post,
+  me,
+  byId,
+  replies,
+  reposted,
+  onOpenThread,
+  onReply,
+  onRepost,
+}: {
+  post: WallPost;
+  me: string;
+  byId: Map<number, WallPost>;
+  replies: number;
+  reposted: boolean;
+  onOpenThread: () => void;
+  onReply: () => void;
+  onRepost: () => void;
+}) {
+  if (post.kind === 'repost') {
+    const original = typeof post.parentId === 'number' ? byId.get(post.parentId) : undefined;
+    return (
+      <li className="feeditem">
+        <div className="repostbanner small muted">🔁 <Who address={post.from} /> reposted · {fmtShort(post.timestamp)}</div>
+        {original ? (
+          <PostCard post={original} me={me} replies={replies} reposted={reposted}
+            onOpenThread={onOpenThread} onReply={onReply} onRepost={onRepost}
+            onFocusClick={onOpenThread} embedded />
+        ) : (
+          <div className="post ghost small muted">🫧 original post unavailable (body expired or not yet loaded)</div>
+        )}
+      </li>
+    );
+  }
+  return (
+    <li className="feeditem">
+      <PostCard post={post} me={me} replies={replies} reposted={reposted}
+        onOpenThread={onOpenThread} onReply={onReply} onRepost={onRepost}
+        onFocusClick={onOpenThread} />
+    </li>
+  );
+}
+
+/**
+ * PostCard — the redesigned wall card: avatar + identity line, timestamp,
+ * optional @mention chip, body, and an action bar (reply · repost · on-chain).
+ * `embedded` drops the outer margin when nested inside a repost / thread.
+ */
+function PostCard({
+  post,
+  me,
+  replies,
+  reposted,
+  onOpenThread,
+  onReply,
+  onRepost,
+  embedded,
+  dim,
+  onFocusClick,
+}: {
+  post: WallPost;
+  me: string;
+  replies: number;
+  reposted: boolean;
+  onOpenThread: () => void;
+  onReply: () => void;
+  onRepost: () => void;
+  embedded?: boolean;
+  dim?: boolean;
+  /** click the card BODY (not the action bar) to focus this post in a thread. */
+  onFocusClick?: () => void;
+}) {
+  const mine = post.from.toLowerCase() === me;
+  const cls = ['post', mine ? 'mine' : '', embedded ? 'embedded' : '', dim ? 'dim' : '',
+    onFocusClick ? 'clickable' : ''].filter(Boolean).join(' ');
+  return (
+    <article className={cls}>
+      <div className="postmain" onClick={onFocusClick} role={onFocusClick ? 'button' : undefined}>
+        <Avatar address={post.from} />
+        <div className="postcol">
+          <div className="posthead">
+            <span className="postwho"><Who address={post.from} /></span>
+            {post.tag !== ZERO && (
+              <span className={post.tag.toLowerCase() === me ? 'tagged tagme' : 'tagged'}>→ <Tag address={post.tag} /></span>
+            )}
+            <span className="ts" title={fmt(post.timestamp)}>{fmtShort(post.timestamp)}</span>
+            <LaneBadge p={post} />
+          </div>
+          <div className="body"><Body p={post} /></div>
+        </div>
+      </div>
+      <div className="actionbar small" onClick={(e) => e.stopPropagation()}>
+        <button className="act" onClick={onReply} title="Reply">💬 {replies > 0 ? replies : 'Reply'}</button>
+        <button className={reposted ? 'act on' : 'act'} onClick={onRepost} title="Repost">🔁 {reposted ? 'Reposted' : 'Repost'}</button>
+        {replies > 0 && <button className="act" onClick={onOpenThread} title="Open thread">🧵 Thread</button>}
+        <a className="act" href={`${EXPLORER}/tx/${post.txHash}`} target="_blank" rel="noreferrer" title="View on-chain">⛓ On-chain ↗</a>
+      </div>
+    </article>
+  );
+}
+
+/**
+ * Composer — the shared post box. Used at the top of the Wall (plain posts, with
+ * an optional @tag) and at the bottom of a thread (replies, `kind:'reply'` with
+ * a `parent`). `onPosted` lets the thread view refocus / clear.
+ */
+function Composer({
+  up,
+  relay,
+  placeholder,
+  cta,
+  allowTag,
+  parent,
+  kind,
+  compact,
+}: {
+  up: UpState;
+  relay: RelayCtx;
+  placeholder: string;
+  cta: string;
+  allowTag?: boolean;
+  parent?: number;
+  kind?: 'post' | 'reply';
+  compact?: boolean;
+}) {
   const [text, setText] = useState('');
   const [tagInput, setTagInput] = useState('');
   const [hits, setHits] = useState<ProfileHit[]>([]);
@@ -630,10 +893,11 @@ function PublicPane({ me, up, feed, relay }: { me: string; up: ReturnType<typeof
     setErr(null);
     setSig(null);
     try {
+      const opts = { tag: tag?.address ?? null, kind: kind ?? 'post', parent } as const;
       if (transport === 'blob') {
-        await postPublicBlob(up!.signer, text.trim(), tag?.address ?? null, { ...relay, onSign: setSig });
+        await postPublicBlob(up!.signer, text.trim(), opts, { ...relay, onSign: setSig });
       } else {
-        await postPublic(up!.signer, text.trim(), tag?.address ?? null);
+        await postPublic(up!.signer, text.trim(), opts);
       }
       setText('');
       setTagInput('');
@@ -647,58 +911,146 @@ function PublicPane({ me, up, feed, relay }: { me: string; up: ReturnType<typeof
   }
 
   return (
+    <div className={compact ? 'composer compact' : 'composer top'}>
+      <textarea
+        placeholder={placeholder}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        maxLength={1024}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && text.trim() && !busy) {
+            e.preventDefault();
+            send();
+          }
+        }}
+      />
+      {allowTag && (
+        <>
+          <div className="tagrow">
+            <input
+              placeholder="🏷 mention a UP (optional): @name or 0x…"
+              value={tagInput}
+              onChange={(e) => onTag(e.target.value)}
+            />
+            {tag && <span className="pill">@{tag.label} <button className="link" onClick={() => { setTag(null); setTagInput(''); }}>×</button></span>}
+          </div>
+          {hits.length > 0 && (
+            <ul className="hits">
+              {hits.map((h) => (
+                <li key={h.address}>
+                  <button className="link" onClick={() => { setTag({ label: h.name ?? short(h.address), address: h.address }); setHits([]); setTagInput(h.name ?? h.address); }}>
+                    {h.name ? '@' + h.name : short(h.address)} — {short(h.address)}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+      <div className="composerfoot">
+        <span className="small muted">⌘/Ctrl+Enter to post · on-chain, public forever</span>
+        <button disabled={busy || !text.trim()} onClick={send}>
+          {busy ? 'Posting…' : cta}
+        </button>
+      </div>
+      {err && <p className="error small">{err}</p>}
+      <SignPanel outcome={sig} />
+    </div>
+  );
+}
+
+/**
+ * ThreadPane — the focused X-style thread view. Walks ancestors up from the
+ * focused post (so you see what it replied to), shows the focused post, then its
+ * descendants FLAT in chronological order (each tappable to refocus). A reply
+ * composer at the bottom targets the focused post.
+ */
+function ThreadPane({
+  me,
+  up,
+  rootId,
+  byId,
+  childrenOf,
+  replyCountOf,
+  relay,
+  openThread,
+}: {
+  me: string;
+  up: UpState;
+  rootId: number;
+  byId: Map<number, WallPost>;
+  childrenOf: Map<number, WallPost[]>;
+  replyCountOf: Map<number, number>;
+  relay: RelayCtx;
+  openThread: (id: number) => void;
+}) {
+  const focused = byId.get(rootId);
+
+  // ancestor chain (oldest → the focused post's parent), walking parentId up.
+  const ancestors: WallPost[] = [];
+  {
+    let cur = focused;
+    const seen = new Set<number>();
+    while (cur && typeof cur.parentId === 'number' && !seen.has(cur.parentId)) {
+      seen.add(cur.parentId);
+      const par = byId.get(cur.parentId);
+      if (!par) break;
+      ancestors.unshift(par);
+      cur = par;
+    }
+  }
+
+  // flat descendants in chronological order (depth-first, ids ascending).
+  const descendants: WallPost[] = [];
+  const walk = (id: number) => {
+    for (const c of childrenOf.get(id) ?? []) {
+      descendants.push(c);
+      walk(c.id);
+    }
+  };
+  if (focused) walk(focused.id);
+
+  if (!focused) {
+    return <div className="muted empty">This post isn’t loaded yet — pull to refresh or go back to the wall.</div>;
+  }
+
+  return (
     <>
-      <ul className="posts">
-        {feed.length === 0 && <li className="muted empty">No public posts yet. Be the first.</li>}
-        {feed.map((p) => (
-          <li key={p.id} className={p.from.toLowerCase() === me ? 'post mine' : 'post'}>
-            <div className="posthead">
-              <Who address={p.from} />
-              {p.tag !== ZERO && (
-                <span className={p.tag.toLowerCase() === me ? 'tagged tagme' : 'tagged'}> → <Tag address={p.tag} /></span>
-              )}
-              <span className="ts">{fmt(p.timestamp)}</span>
-              <LaneBadge p={p} />
-            </div>
-            <div className="body"><Body p={p} /></div>
-            <a className="small muted" href={`${EXPLORER}/tx/${p.txHash}`} target="_blank" rel="noreferrer">on-chain ↗</a>
+      <ul className="feed thread">
+        {ancestors.map((a) => (
+          <li className="feeditem ancestor" key={a.id}>
+            <PostCard post={a} me={me} replies={replyCountOf.get(a.id) ?? 0} reposted={false}
+              onOpenThread={() => openThread(a.id)} onReply={() => openThread(a.id)} onRepost={() => {}}
+              onFocusClick={() => openThread(a.id)} embedded dim />
+          </li>
+        ))}
+
+        <li className="feeditem focused" key={focused.id}>
+          <PostCard post={focused} me={me} replies={replyCountOf.get(focused.id) ?? 0} reposted={false}
+            onOpenThread={() => {}} onReply={() => {}} onRepost={() => {}} />
+        </li>
+
+        <li className="convsection small muted">
+          {descendants.length > 0 ? `${descendants.length} ${descendants.length === 1 ? 'reply' : 'replies'}` : 'No replies yet'}
+        </li>
+
+        {descendants.map((d) => (
+          <li className="feeditem reply" key={d.id}>
+            <PostCard post={d} me={me} replies={replyCountOf.get(d.id) ?? 0} reposted={false}
+              onOpenThread={() => openThread(d.id)} onReply={() => openThread(d.id)} onRepost={() => {}}
+              onFocusClick={() => openThread(d.id)} embedded />
           </li>
         ))}
       </ul>
 
-      <div className="composer">
-        <div className="small muted">Public post — visible to everyone on-chain.</div>
-        <textarea
-          placeholder="What's on your mind?"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          maxLength={1024}
-        />
-        <div className="tagrow">
-          <input
-            placeholder="tag a UP (optional): @name or 0x…"
-            value={tagInput}
-            onChange={(e) => onTag(e.target.value)}
-          />
-          {tag && <span className="pill">@{tag.label} <button className="link" onClick={() => { setTag(null); setTagInput(''); }}>clear</button></span>}
-        </div>
-        {hits.length > 0 && (
-          <ul className="hits">
-            {hits.map((h) => (
-              <li key={h.address}>
-                <button className="link" onClick={() => { setTag({ label: h.name ?? short(h.address), address: h.address }); setHits([]); setTagInput(h.name ?? h.address); }}>
-                  {h.name ? '@' + h.name : short(h.address)} — {short(h.address)}
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-        <button disabled={busy || !text.trim()} onClick={send}>
-          {busy ? 'Posting…' : 'Post publicly'}
-        </button>
-        {err && <p className="error">{err}</p>}
-        <SignPanel outcome={sig} />
-      </div>
+      <Composer
+        up={up}
+        relay={relay}
+        placeholder="Write a reply…"
+        cta="Reply"
+        parent={focused.id}
+        kind="reply"
+      />
     </>
   );
 }
@@ -710,22 +1062,17 @@ function Tag({ address }: { address: string }) {
 }
 
 /** MentionsPane — every public post that @tags the connected UP, newest first. */
-function MentionsPane({ me, feed }: { me: string; feed: WallPost[] }) {
+function MentionsPane({ me, feed, openThread }: { me: string; feed: WallPost[]; openThread: (id: number) => void }) {
   return (
-    <ul className="posts">
+    <ul className="feed">
       {feed.length === 0 && (
         <li className="muted empty">No one has mentioned you yet. When a public post @tags your UP, it shows up here.</li>
       )}
       {feed.map((p) => (
-        <li key={p.id} className={p.from.toLowerCase() === me ? 'post mine' : 'post'}>
-          <div className="posthead">
-            <Who address={p.from} />
-            <span className="tagged tagme"> → you</span>
-            <span className="ts">{fmt(p.timestamp)}</span>
-            <LaneBadge p={p} />
-          </div>
-          <div className="body"><Body p={p} /></div>
-          <a className="small muted" href={`${EXPLORER}/tx/${p.txHash}`} target="_blank" rel="noreferrer">on-chain ↗</a>
+        <li key={p.id} className="feeditem">
+          <PostCard post={p} me={me} replies={0} reposted={false}
+            onOpenThread={() => openThread(p.id)} onReply={() => openThread(p.id)} onRepost={() => {}}
+            onFocusClick={() => openThread(p.id)} />
         </li>
       ))}
     </ul>

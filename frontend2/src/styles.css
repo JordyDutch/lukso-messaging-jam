@@ -187,29 +187,120 @@ section { margin-top: 20px; }
 .navbtn.active { background: rgba(255,71,133,.16); border-color: var(--accent); }
 .navbtn:disabled { opacity: .35; cursor: not-allowed; }
 
-.threadbody { display: flex; flex-direction: column; gap: 14px; padding: 16px; overflow-y: auto; flex: 1; min-height: 0; }
+/* The wall body: a subtle vertical "timeline" rail runs down the left so the
+   feed reads as a stream of events, not a stack of boxes. */
+.threadbody {
+  display: flex; flex-direction: column; gap: 0; padding: 0;
+  overflow-y: auto; flex: 1; min-height: 0;
+  background:
+    radial-gradient(1200px 400px at 100% -10%, rgba(138,92,255,.07), transparent 60%),
+    radial-gradient(1000px 360px at -10% 0%, rgba(255,71,133,.06), transparent 55%);
+}
 
-.lockbanner { border: 1px solid var(--warn); color: var(--warn); border-radius: 8px; padding: 8px 12px; }
+.lockbanner { border: 1px solid var(--warn); color: var(--warn); border-radius: 8px; padding: 8px 12px; margin: 14px 16px 0; }
 
-.composer { display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
-.composer textarea { width: 100%; min-height: 64px; resize: vertical; background: var(--bg); color: inherit; border: 1px solid var(--border); border-radius: 8px; padding: 8px; font: inherit; }
-.composer input { width: 100%; background: var(--bg); color: inherit; border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; font: inherit; }
+/* ---------- composer ---------- */
+.composer { display: flex; flex-direction: column; gap: 10px; }
+/* top composer: a prominent "say something" card pinned above the feed. */
+.composer.top {
+  margin: 14px 16px 6px; padding: 14px;
+  border: 1px solid var(--border); border-radius: 14px;
+  background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,0));
+  box-shadow: 0 1px 0 rgba(255,255,255,.03) inset;
+}
+.composer.compact { margin: 0; padding: 0; border: 0; }
+/* thread reply composer + DM composer stick to the bottom of their pane. */
+.threadview .composer:not(.top):not(.compact) {
+  position: sticky; bottom: 0; margin: 0; padding: 12px 16px;
+  border-top: 1px solid var(--border); background: var(--card);
+}
+.composer textarea {
+  width: 100%; min-height: 64px; resize: vertical; background: var(--bg);
+  color: inherit; border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 12px; font: inherit; line-height: 1.45;
+}
+.composer textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(255,71,133,.14); }
+.composer input { width: 100%; background: var(--bg); color: inherit; border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; font: inherit; }
+.composer input:focus { outline: none; border-color: var(--accent); }
+.composerfoot { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.composerfoot button { border-radius: 999px; padding: 9px 18px; font-weight: 600; }
 .dmcomposer { position: sticky; bottom: 0; }
 
 .tagrow { display: flex; gap: 8px; align-items: center; }
-.pill { font-size: 12px; background: rgba(127,127,127,.18); padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
-.hits { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 8px; }
-.hits li { padding: 4px 8px; }
+.pill { font-size: 12px; background: rgba(255,71,133,.16); color: var(--fg); border: 1px solid rgba(255,71,133,.35); padding: 3px 10px; border-radius: 999px; white-space: nowrap; }
+.pill .link { color: var(--muted); text-decoration: none; margin-left: 4px; }
+.hits { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.hits li { padding: 6px 10px; }
+.hits li + li { border-top: 1px solid var(--border); }
 
-/* feed posts (Wall / Mentions) */
-.posts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
-.post { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
-.post.mine { border-color: #3b6ea5; background: rgba(59,110,165,.08); }
-.posthead { display: flex; gap: 8px; align-items: baseline; font-size: 13px; }
-.posthead .ts { margin-left: auto; opacity: .6; font-size: 11px; }
-.tagged { color: #6aa3ff; }
-.body { margin: 6px 0; white-space: pre-wrap; word-break: break-word; }
-.empty { padding: 16px; }
+/* ---------- the wall feed ---------- */
+.feed { list-style: none; margin: 0; padding: 8px 16px 24px; display: flex; flex-direction: column; gap: 0; }
+.feeditem {
+  position: relative; padding: 0 0 0 18px;
+}
+/* timeline rail + node dot down the left of every event */
+.feeditem::before {
+  content: ''; position: absolute; left: 5px; top: 0; bottom: 0; width: 2px;
+  background: linear-gradient(180deg, rgba(138,92,255,.35), rgba(255,71,133,.25));
+  opacity: .5;
+}
+.feeditem::after {
+  content: ''; position: absolute; left: 0; top: 20px; width: 12px; height: 12px;
+  border-radius: 50%; background: var(--bg);
+  border: 2px solid var(--accent); box-shadow: 0 0 0 3px rgba(255,71,133,.12);
+}
+.feed > .feeditem:first-child::before { top: 14px; }
+.feed > .feeditem:last-child::before { bottom: auto; height: 20px; }
+
+.repostbanner { display: flex; align-items: center; gap: 6px; padding: 10px 2px 2px; }
+.repostbanner a { color: inherit; font-weight: 600; }
+
+/* the card itself */
+.post {
+  margin: 8px 0; border: 1px solid var(--border); border-radius: 14px;
+  padding: 12px 14px; background: var(--card);
+  transition: border-color .15s ease, transform .12s ease, box-shadow .15s ease;
+}
+.post:hover { border-color: rgba(138,92,255,.45); box-shadow: 0 6px 20px rgba(0,0,0,.25); }
+.post.clickable .postmain { cursor: pointer; }
+.post.mine { border-color: rgba(255,71,133,.45); background: linear-gradient(180deg, rgba(255,71,133,.08), var(--card)); }
+.post.embedded { margin: 2px 0 8px; box-shadow: none; }
+.post.embedded:hover { transform: none; }
+.post.dim { opacity: .72; }
+.post.ghost { margin: 6px 0 10px; padding: 12px 14px; border-style: dashed; }
+
+.postmain { display: flex; gap: 11px; align-items: flex-start; }
+.postcol { min-width: 0; flex: 1; }
+.posthead { display: flex; gap: 8px; align-items: baseline; font-size: 14px; flex-wrap: wrap; }
+.postwho a { font-weight: 700; color: var(--fg); text-decoration: none; }
+.postwho a:hover { text-decoration: underline; }
+.posthead .ts { margin-left: auto; opacity: .55; font-size: 12px; }
+.tagged { color: #8a5cff; font-size: 13px; }
+.tagged.tagme { color: var(--accent); font-weight: 600; }
+.body { margin: 7px 0 2px; white-space: pre-wrap; word-break: break-word; line-height: 1.5; font-size: 15px; }
+.empty { padding: 28px 16px; text-align: center; }
+
+/* action bar under each post */
+.actionbar { display: flex; gap: 4px; margin-top: 8px; flex-wrap: wrap; }
+.act {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: transparent; border: 0; color: var(--muted);
+  padding: 5px 9px; border-radius: 999px; cursor: pointer; font-size: 12.5px;
+  text-decoration: none; transition: background .12s ease, color .12s ease;
+}
+.act:hover { background: rgba(138,92,255,.14); color: var(--fg); }
+.act.on { color: var(--ok); }
+.lane-badge { margin-left: 2px; }
+
+/* ---------- focused thread ---------- */
+.feed.thread { padding-top: 14px; }
+.feeditem.focused .post { border-color: rgba(138,92,255,.6); box-shadow: 0 0 0 2px rgba(138,92,255,.18); }
+.feeditem.focused::after { background: var(--accent); }
+.feeditem.reply { padding-left: 34px; }
+.feeditem.reply::before { left: 21px; }
+.feeditem.reply::after { left: 16px; width: 9px; height: 9px; border-color: #8a5cff; }
+.feeditem.ancestor { opacity: .9; }
+.feed.thread > .convsection { padding: 10px 2px 2px; border: 0; }
 
 /* chat bubbles (DM) */
 .bubbles { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }

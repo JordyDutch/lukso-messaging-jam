@@ -113,6 +113,13 @@ export const WALL_ABI = [
 
 export type Lane = 'text' | 'blob';
 
+/**
+ * A public post can be a plain post, a reply to another post, or a repost
+ * (boost) of another post. Threads/reposts are PUBLIC-only; DMs never carry an
+ * envelope. See the PostEnvelope docs below for how this is stamped on-chain.
+ */
+export type PostKind = 'post' | 'reply' | 'repost';
+
 export interface WallPost {
   id: number;
   from: string;
@@ -134,6 +141,62 @@ export interface WallPost {
   locked?: boolean; // encrypted and we cannot decrypt
   pruned?: boolean; // blob lane: body no longer retrievable (sidecar pruned)
   signal?: boolean; // P2P WebRTC signaling envelope — not a human message
+  // thread / repost (public posts only; decoded from the typed body envelope):
+  kind?: PostKind; // 'post' when absent/legacy
+  parentId?: number; // reply target (kind:'reply') or reposted post (kind:'repost')
+}
+
+// ---- typed body envelope (public threads + reposts) -----------------------
+// A public post body is EITHER legacy plain UTF-8 text (every post before this
+// feature) OR a typed envelope: a 4-byte magic prefix "\x00UD1" followed by a
+// compact JSON record. The leading NUL byte can never start valid chat text, so
+// the decoder distinguishes the two cheaply and legacy posts render untouched.
+//
+//   legacy:   <utf8 text>
+//   envelope: 00 55 44 31  {"v":1,"kind":"reply","parent":42,"body":"…"}
+//
+// The envelope rides in the SAME body bytes on both lanes (text + blob), so no
+// contract/relayer/beacon change is needed — only the body we encode/decode.
+const ENVELOPE_MAGIC = new Uint8Array([0x00, 0x55, 0x44, 0x31]); // \x00UD1
+
+export interface PostEnvelope {
+  v: 1;
+  kind: PostKind;
+  parent?: number; // parent WallPost.id (reply target / reposted post)
+  body?: string; // post text; empty/absent for a plain repost (boost)
+}
+
+/** Encode a public body. Plain posts stay legacy (bare UTF-8) for max
+ *  back-compat + smallest payload; replies/reposts get the typed envelope. */
+export function encodePublicBody(text: string, kind: PostKind, parent?: number): Uint8Array {
+  if (kind === 'post') return enc.encode(text); // legacy wire format, unchanged
+  const env: PostEnvelope = { v: 1, kind, ...(parent !== undefined ? { parent } : {}), ...(text ? { body: text } : {}) };
+  const json = enc.encode(JSON.stringify(env));
+  const out = new Uint8Array(ENVELOPE_MAGIC.length + json.length);
+  out.set(ENVELOPE_MAGIC, 0);
+  out.set(json, ENVELOPE_MAGIC.length);
+  return out;
+}
+
+/** Decode a public body's bytes into {kind,parentId,text}. Bare text → a plain
+ *  post. Only the 4-byte magic triggers JSON parsing. */
+export function decodePublicBody(bytes: Uint8Array): { kind: PostKind; parentId?: number; text: string } {
+  const hasMagic =
+    bytes.length >= ENVELOPE_MAGIC.length &&
+    ENVELOPE_MAGIC.every((b, i) => bytes[i] === b);
+  if (!hasMagic) return { kind: 'post', text: safeUtf8Bytes(bytes) };
+  try {
+    const env = JSON.parse(dec.decode(bytes.slice(ENVELOPE_MAGIC.length))) as PostEnvelope;
+    const kind: PostKind = env.kind === 'reply' || env.kind === 'repost' ? env.kind : 'post';
+    return {
+      kind,
+      parentId: typeof env.parent === 'number' ? env.parent : undefined,
+      text: typeof env.body === 'string' ? env.body : '',
+    };
+  } catch {
+    // Malformed envelope — degrade to showing the raw bytes as a plain post.
+    return { kind: 'post', text: safeUtf8Bytes(bytes) };
+  }
 }
 
 const ZERO = '0x0000000000000000000000000000000000000000';
@@ -153,17 +216,33 @@ export function writeWall(signer: ethers.Signer): ethers.Contract {
   return new ethers.Contract(WALL_ADDRESS, WALL_ABI, signer);
 }
 
-/** Post a PUBLIC plaintext message, optionally tagging a UP. */
+/** A public post can be a plain post, a reply, or a repost. The envelope is
+ *  carried in the body; `parent` is the target post's id. */
+export interface PublicOpts {
+  tag?: string | null;
+  kind?: PostKind;
+  parent?: number;
+}
+
+/** Post a PUBLIC message (plain / reply / repost), optionally tagging a UP. */
 export async function postPublic(
   signer: ethers.Signer,
   text: string,
-  tag?: string | null,
+  opts?: PublicOpts | string | null,
 ): Promise<string> {
+  const o = normalizePublicOpts(opts);
   const wall = writeWall(signer);
-  const body = enc.encode(text);
-  const tx = await wall.post(tag ?? ZERO, false, ethers.ZeroHash, body);
+  const body = encodePublicBody(text, o.kind ?? 'post', o.parent);
+  const tx = await wall.post(o.tag ?? ZERO, false, ethers.ZeroHash, body);
   await tx.wait();
   return tx.hash;
+}
+
+/** Back-compat shim: older callers passed a bare `tag` string as the 3rd arg. */
+function normalizePublicOpts(opts?: PublicOpts | string | null): PublicOpts {
+  if (opts == null) return {};
+  if (typeof opts === 'string') return { tag: opts };
+  return opts;
 }
 
 /**
@@ -283,14 +362,16 @@ async function sendBlobPost(
   return tx.hash;
 }
 
-/** Post a PUBLIC plaintext message via the blob lane, optionally tagging a UP. */
+/** Post a PUBLIC message (plain / reply / repost) via the blob lane. */
 export async function postPublicBlob(
   signer: ethers.Signer,
   text: string,
-  tag?: string | null,
+  opts?: PublicOpts | string | null,
   relay?: RelayCtx | null,
 ): Promise<string> {
-  return sendBlobPost(signer, tag ?? ZERO, false, ethers.ZeroHash, enc.encode(text), relay);
+  const o = normalizePublicOpts(opts);
+  const body = encodePublicBody(text, o.kind ?? 'post', o.parent);
+  return sendBlobPost(signer, o.tag ?? ZERO, false, ethers.ZeroHash, body, relay);
 }
 
 /** Post an ENCRYPTED DM to `peer` via the blob lane. Seals exactly like postDm. */
@@ -421,7 +502,10 @@ async function decodeOne(
     }
   }
 
-  if (!p.encrypted) return { ...p, text: safeUtf8(p.bodyRaw) };
+  if (!p.encrypted) {
+    const { kind, parentId, text } = decodePublicBody(ethers.getBytes(p.bodyRaw));
+    return { ...p, kind, parentId, text };
+  }
   // P2P signaling envelope — not a human chat line.
   if (looksLikeP2pSignal(p.bodyRaw)) return { ...p, signal: true };
   // encrypted: can I open it? Only if I'm a participant and know the peer pub.
@@ -491,9 +575,9 @@ export async function decodePosts(
   return [...byId.values()].sort((a, b) => a.id - b.id);
 }
 
-function safeUtf8(hex: string): string {
+function safeUtf8Bytes(bytes: Uint8Array): string {
   try {
-    return dec.decode(ethers.getBytes(hex));
+    return dec.decode(bytes);
   } catch {
     return '(unreadable bytes)';
   }
