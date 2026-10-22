@@ -103,6 +103,31 @@ export const DEFAULT_TRANSPORT: Transport =
     : 'blob');
 
 /**
+ * LSP25 blob RELAYER endpoint (optional). When set, blob posts are routed
+ * through a relayer that builds the EIP-4844 Type-3 tx for us: the user's UP
+ * controller signs the LSP25 `executeRelayCall` digest (the UP extension can do
+ * this today — it's the same gas-less-tx signature it already produces), and
+ * the relayer EOA attaches the blob + pays gas, calling the UP's KeyManager so
+ * the UP is msg.sender inside WallV2.postBlob (PostedBlob.from = the UP).
+ *
+ * PROVEN on mainnet (poc/lab-ups/blob-lsp25-spike.mjs, 2026-10-22): blobhash(0)
+ * is read correctly 3 call frames deep, zero WallV2 change. The ONLY reason a
+ * relayer is needed is that no wallet (UP extension) nor the hosted LUKSO relay
+ * service signs Type-3 yet. If VITE_BLOB_RELAYER_URL is unset, blob posts are
+ * sent directly from the signer (works only if the wallet signs Type-3) and the
+ * UI falls back to the text lane when it can't (see transport.ts / blob.ts).
+ *
+ * The endpoint must accept POST {keyManager, signature, nonce, validityTimestamps,
+ * payload, blob} (blob = 0x-hex of the 128 KB field-element-encoded blob) and
+ * return { txHash }. See docs/BLOB-ARCHITECTURE.md §relay and relay.ts.
+ */
+export const BLOB_RELAYER_URL: string | null =
+  (import.meta.env?.VITE_BLOB_RELAYER_URL as string | undefined) ?? null;
+
+/** LSP25 standard constants (same on every LUKSO KeyManager). */
+export const LSP25_VERSION = 25;
+
+/**
  * Wall contract — WallV2, LIVE on LUKSO mainnet (deployed 2026-10-22).
  * Stores public plaintext posts and encrypted DM ciphertext on-chain via the
  * `Posted` event (the frontend reads from logs, not state). v2 dropped the

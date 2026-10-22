@@ -12,6 +12,36 @@ export interface ProfileHit {
   avatar: string | null;
 }
 
+/**
+ * The 4-char address suffix LUKSO shows after a profile name to disambiguate
+ * duplicate names (e.g. `alice#0F41`). It is the first four hex characters of
+ * the address AFTER `0x`, uppercased — the exact convention used by
+ * universalprofile.cloud and the UP Browser Extension. Deterministic and
+ * collision-cheap, so it doubles as a stable key for display AND indexing.
+ */
+export function upHash(address: string): string {
+  return ethers.getAddress(address).slice(2, 6).toUpperCase();
+}
+
+/**
+ * Human-readable UP identity: `name#HASH` when the profile has an LSP3 name,
+ * else `0xabcd…1234#HASH` (short address + the same suffix) so there is always
+ * a stable, indexable handle. Pure/synchronous given a resolved name — pass the
+ * `nameOf()` result (or null) in.
+ */
+export function upLabel(address: string, name: string | null): string {
+  const addr = ethers.getAddress(address);
+  const hash = upHash(addr);
+  if (name && name.trim()) return `${name.trim()}#${hash}`;
+  return `${addr.slice(0, 6)}…${addr.slice(-4)}#${hash}`;
+}
+
+/** Resolve the LSP3 name (cached) and return the full `name#HASH` label. */
+export async function labelOf(address: string): Promise<string> {
+  const name = await nameOf(address);
+  return upLabel(address, name);
+}
+
 const QUERY = `
   query Search($q: String!) {
     search_profiles_v2(args: { search: $q }, limit: 8) {

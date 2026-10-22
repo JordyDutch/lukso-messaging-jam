@@ -15,11 +15,12 @@ import {
   postDm,
   postDmBlob,
   type WallPost,
+  type RelayCtx,
 } from '../lib/wall';
 import { useTransport } from '../lib/transport';
 import { convPubOf } from '../lib/registry';
 import { threadIdFor } from '../lib/crypto';
-import { resolveName, nameOf, type ProfileHit } from '../lib/names';
+import { resolveName, nameOf, upLabel, type ProfileHit } from '../lib/names';
 import { watchRoster, type RosterEntry } from '../lib/roster';
 import { EXPLORER, KNOWN_PEERS } from '../lib/config';
 import { ethers } from 'ethers';
@@ -40,8 +41,12 @@ type Tab =
 const ZERO = '0x0000000000000000000000000000000000000000';
 
 /**
- * useName — reverse-resolve a UP address to its @name (cached in names.ts),
- * returning a display string: "@name" when known, else a short address.
+ * useName — reverse-resolve a UP address to its human-readable `name#HASH`
+ * label (cached in names.ts). `name#HASH` (e.g. `alice#0F41`) is the LUKSO
+ * disambiguation convention: the first 4 hex chars after 0x, uppercased. When
+ * the profile has no LSP3 name it falls back to `0xabcd…1234#HASH` so there is
+ * always a stable, indexable handle (not just a bare short address). Returns ''
+ * for the zero address.
  */
 function useName(address: string | null | undefined): string {
   const [name, setName] = useState<string | null>(null);
@@ -56,7 +61,7 @@ function useName(address: string | null | undefined): string {
     };
   }, [address]);
   if (!address || address === ZERO) return '';
-  return name ? `@${name}` : short(address);
+  return upLabel(address, name);
 }
 
 /** Address label that resolves to @name, falling back to a linked short address. */
@@ -72,6 +77,22 @@ function Who({ address }: { address: string }) {
 export function Wall() {
   const { state, dispatch } = useApp();
   const up = state.up!;
+
+  // Relay context for the gas-less LSP25 blob lane. The relay path (relay.ts)
+  // needs the UP's CONTROLLER EOA (to read its LSP25 nonce + as the digest
+  // signer). The stock UP extension abstracts the controller away — it returns
+  // the UP address as the account and wraps signing internally — so the dApp
+  // cannot name a controller here, and `relay` stays null: blob posts go via the
+  // direct Type-3 path (and fall back to the text lane when the signer can't
+  // sign Type-3, per the probe). This is wired so a signer that DOES expose its
+  // controller (lab/headless, or a future extension API) activates the relay
+  // with zero further change. See docs/BLOB-ARCHITECTURE.md §relay.
+  const relay = useMemo<RelayCtx | null>(() => {
+    const controller = (up as { controller?: string }).controller;
+    if (!controller) return null;
+    return { up: up.address, controller };
+  }, [up]);
+
   const [raw, setRaw] = useState<WallPost[]>([]);
   const [decoded, setDecoded] = useState<WallPost[]>([]);
   const [tab, setTab] = useState<Tab>({ kind: 'public' });
@@ -190,7 +211,7 @@ export function Wall() {
 
       <section className="feed">
         {tab.kind === 'public' ? (
-          <PublicPane me={meLc} up={up} feed={publicFeed} />
+          <PublicPane me={meLc} up={up} feed={publicFeed} relay={relay} />
         ) : tab.kind === 'mentions' ? (
           <MentionsPane me={meLc} feed={mentions} />
         ) : tab.kind === 'people' ? (
@@ -207,6 +228,7 @@ export function Wall() {
             allPosts={decoded}
             meAnnounced={state.announced}
             peerAnnounced={!!peerAnnounced[tab.address.toLowerCase()]}
+            relay={relay}
           />
         )}
       </section>
@@ -282,7 +304,7 @@ function Body({ p }: { p: WallPost }) {
   return <>{p.text}</>;
 }
 
-function PublicPane({ me, up, feed }: { me: string; up: ReturnType<typeof useApp>['state']['up']; feed: WallPost[] }) {
+function PublicPane({ me, up, feed, relay }: { me: string; up: ReturnType<typeof useApp>['state']['up']; feed: WallPost[]; relay: RelayCtx | null }) {
   const [text, setText] = useState('');
   const [tagInput, setTagInput] = useState('');
   const [hits, setHits] = useState<ProfileHit[]>([]);
@@ -316,7 +338,7 @@ function PublicPane({ me, up, feed }: { me: string; up: ReturnType<typeof useApp
     setErr(null);
     try {
       if (transport === 'blob') {
-        await postPublicBlob(up!.signer, text.trim(), tag?.address ?? null);
+        await postPublicBlob(up!.signer, text.trim(), tag?.address ?? null, relay);
       } else {
         await postPublic(up!.signer, text.trim(), tag?.address ?? null);
       }
@@ -573,6 +595,7 @@ function DmPane({
   allPosts,
   meAnnounced,
   peerAnnounced,
+  relay,
 }: {
   up: ReturnType<typeof useApp>['state']['up'];
   peer: { name: string; address: string };
@@ -580,6 +603,7 @@ function DmPane({
   allPosts: WallPost[];
   meAnnounced: boolean;
   peerAnnounced: boolean;
+  relay: RelayCtx | null;
 }) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
@@ -598,7 +622,7 @@ function DmPane({
         peerAddr: peer.address,
         text: text.trim(),
       };
-      if (transport === 'blob') await postDmBlob(dmArgs);
+      if (transport === 'blob') await postDmBlob({ ...dmArgs, relay });
       else await postDm(dmArgs);
       setText('');
     } catch (e) {

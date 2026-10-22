@@ -24,6 +24,23 @@ import {
   ub,
 } from './crypto';
 import { convPubOf } from './registry';
+import {
+  relayerConfigured,
+  buildBlobRelayRequest,
+  sendViaRelayer,
+} from './relay';
+
+/**
+ * Optional relay context. When present AND a relayer is configured, blob posts
+ * go through the LSP25 gas-less path (relayer builds the Type-3 tx, UP is the
+ * author) instead of asking the wallet to sign a Type-3 tx itself. See relay.ts.
+ */
+export interface RelayCtx {
+  /** the user's UP address (PostedBlob.from will be this). */
+  up: string;
+  /** the controller EOA that signs the LSP25 digest (from the extension). */
+  controller: string;
+}
 
 export const WALL_ABI = [
   'function post(address tag, bool encrypted, bytes32 threadId, bytes body) external',
@@ -126,17 +143,47 @@ export async function postDm(args: {
 
 const IFACE = new ethers.Interface(WALL_ABI);
 
-/** Build + send a Type-3 postBlob tx carrying `body` in a blob. */
+/**
+ * Build + send a postBlob carrying `body` in a blob. Two paths:
+ *
+ *  1. RELAY (preferred when a relayer is configured AND a RelayCtx is given):
+ *     the UP controller signs the LSP25 digest (the extension CAN do this) and a
+ *     Type-3-capable relayer attaches the blob + pays gas via the UP's
+ *     KeyManager. PostedBlob.from = the UP. Works even though the extension
+ *     can't sign Type-3 itself. Proven on mainnet (blob-lsp25-spike.mjs).
+ *
+ *  2. DIRECT: the signer sends the Type-3 tx itself. Only works if the wallet
+ *     signs Type-3 (most UP extensions don't yet). PostedBlob.from = the signer.
+ */
 async function sendBlobPost(
   signer: ethers.Signer,
   tag: string,
   encrypted: boolean,
   threadId: string,
   body: Uint8Array,
+  relay?: RelayCtx | null,
 ): Promise<string> {
   const blob = encodeBlob(body);
   const blobHash = await versionedHashFor(blob);
   const meta = enc.encode(JSON.stringify({ v: 1, len: body.length }));
+
+  // Path 1: LSP25 gas-less relay.
+  if (relay && relayerConfigured() && 'provider' in signer && signer.provider) {
+    const req = await buildBlobRelayRequest({
+      signer: signer as ethers.JsonRpcSigner,
+      controllerAddress: relay.controller,
+      up: relay.up,
+      tag,
+      encrypted,
+      threadId,
+      blobHash,
+      meta,
+      blobHex: ethers.hexlify(blob),
+    });
+    return sendViaRelayer(req);
+  }
+
+  // Path 2: direct Type-3 from the signer.
   const data = IFACE.encodeFunctionData('postBlob', [
     tag,
     encrypted,
@@ -159,8 +206,9 @@ export async function postPublicBlob(
   signer: ethers.Signer,
   text: string,
   tag?: string | null,
+  relay?: RelayCtx | null,
 ): Promise<string> {
-  return sendBlobPost(signer, tag ?? ZERO, false, ethers.ZeroHash, enc.encode(text));
+  return sendBlobPost(signer, tag ?? ZERO, false, ethers.ZeroHash, enc.encode(text), relay);
 }
 
 /** Post an ENCRYPTED DM to `peer` via the blob lane. Seals exactly like postDm. */
@@ -171,6 +219,7 @@ export async function postDmBlob(args: {
   peerAddr: string;
   text?: string;
   rawBody?: Uint8Array;
+  relay?: RelayCtx | null;
 }): Promise<string> {
   const threadId = threadIdFor(args.myAddr, args.peerAddr);
   let body: Uint8Array;
@@ -182,7 +231,7 @@ export async function postDmBlob(args: {
     const key = conversationKey(args.myConvPriv, ub(peerPubHex), threadId);
     body = await sealBytes(enc.encode(args.text ?? ''), key);
   }
-  return sendBlobPost(args.signer, args.peerAddr, true, threadId, body);
+  return sendBlobPost(args.signer, args.peerAddr, true, threadId, body, args.relay);
 }
 
 /** Decode a batch of posts for display from my vantage point. */
