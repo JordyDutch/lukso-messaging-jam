@@ -1,0 +1,12 @@
+{
+  "ok": true,
+  "txHash": "0xea5d0fb95c95b69b50e437d2a33062f7553fbf0933dc4485dd54914332199c9c",
+  "block": 8626925,
+  "versionedHash": "0x0161a41e20e243d0b3a14a996a6adba3d2bfccebc4ef5aa5fce9d9d421b31e98",
+  "postedBlobId": "0",
+  "payloadBytes": 140,
+  "gasUsed": "98533",
+  "blobGasUsed": "131072",
+  "blobGasPrice": "1",
+  "when": "2026-10-22T12:09:22.595Z"
+}

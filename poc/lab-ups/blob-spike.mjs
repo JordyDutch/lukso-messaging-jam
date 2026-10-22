@@ -106,18 +106,21 @@ async function main() {
   if (rt !== payloadText) throw new Error('blob encode/decode round-trip mismatch');
   console.log('blob built:', blob.length, 'bytes; round-trip OK');
 
-  // --- compute commitment + versioned hash ---
+  // --- compute the versioned hash via ethers' own KZG wrapper (handles the
+  //     kzg-wasm API-name variants) so it matches exactly what the sidecar
+  //     will carry, then anchor THAT hash in the call. ---
   const blobHex = '0x' + Buffer.from(blob).toString('hex');
-  const commitment = kzg.blobToKzgCommitment(blobHex);
-  const proof = kzg.computeBlobKzgProof(blobHex, commitment);
-  // versioned hash = 0x01 ++ sha256(commitment)[1:]
-  const commitmentBytes = ethers.getBytes(commitment.startsWith('0x') ? commitment : '0x' + commitment);
-  const sha = ethers.sha256(commitmentBytes);
-  const versionedHash = '0x01' + sha.slice(4); // replace first byte (0x01 version)
-  console.log('kzg commitment:', (commitment.startsWith('0x') ? commitment : '0x' + commitment).slice(0, 20) + '…');
-  console.log('versioned hash:', versionedHash);
+  // ethers Transaction.from({blobs, kzg}) builds the sidecar and fills
+  // blobVersionedHashes — build it once to read the hash back.
+  const probe = ethers.Transaction.from({
+    type: 3, to: WALLV2, chainId: 42, nonce: 0,
+    maxFeePerGas: 1n, maxPriorityFeePerGas: 1n, maxFeePerBlobGas: 1n, gasLimit: 21000n,
+    data: '0x', blobs: [blobHex], kzg,
+  });
+  const versionedHash = probe.blobVersionedHashes[0];
+  console.log('versioned hash (ethers/kzg):', versionedHash);
 
-  // --- encode the postBlob call ---
+  // --- encode the postBlob call with the real hash ---
   const iface = new ethers.Interface(ABI);
   const tag = z.address;              // self-tag for the test (public, encrypted=false)
   const threadId = ethers.ZeroHash;
