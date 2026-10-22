@@ -1,0 +1,36 @@
+{
+  "network": "lukso-mainnet",
+  "wall": "0x480f1913A546E99e34B313ab7c9dDFc294aF2c07",
+  "verifyingContract": "0x480f1913A546E99e34B313ab7c9dDFc294aF2c07",
+  "flows": {
+    "publicRelayed": {
+      "txHash": "0x1325bf7aa83f59a7947f1113d64aec4a4a90a4266a1e005869cd0c390cdf586c",
+      "id": "3",
+      "blobHash": "0x016aa1ce4a310129092882774e9bcbe06edeabac76b7f7cc8aadede552f13ac5",
+      "author": "0xA02B2b0cB13a87824B0e42C951de3B1a20ECbA5C",
+      "msgSender": "0x80B890Cd922925d0D74c99c9FaC3f17a66640135",
+      "authorNotSender": true,
+      "authorshipRecovered": "0xE9e848DB589557bDF3e4443160Ef399B09b96B15",
+      "lsp6Perm": "0x00000000000000000000000000000000000000000000000000000000007f3f7f",
+      "bodyRecovered": true
+    },
+    "dmRelayed": {
+      "txHash": "0x6827d412a4c319d52ef2d27280f1e23a5714d2ebbcb51a835d7957d05fb0ee44",
+      "id": "4",
+      "blobHash": "0x01bd701815d4f62ef78ddff672bcb8d09656f98ff4fdf15245da26d3ff5cfc06",
+      "threadId": "0xa029e13d888e14246f44759f9dd15030557b6cbdf0ba40149f0e2eb16f37de06",
+      "author": "0xA02B2b0cB13a87824B0e42C951de3B1a20ECbA5C",
+      "peer": "0xf380f128b69c5EC2dffafC7Dd3f80DFDed0f509C",
+      "msgSender": "0x80B890Cd922925d0D74c99c9FaC3f17a66640135",
+      "authorNotSender": true,
+      "authorshipRecovered": "0xE9e848DB589557bDF3e4443160Ef399B09b96B15",
+      "lsp6Perm": "0x00000000000000000000000000000000000000000000000000000000007f3f7f",
+      "dmDecrypted": true
+    },
+    "negativeForgedRejected": {
+      "rejected": true,
+      "why": "signer 0xC5cC4A4F8633373693b626ACB77B2Cc1d41e525c is NOT an LSP6 controller of 0xA02B2b0cB13a87824B0e42C951de3B1a20ECbA5C (perm=0x)"
+    }
+  },
+  "verdict": "PASS"
+}
