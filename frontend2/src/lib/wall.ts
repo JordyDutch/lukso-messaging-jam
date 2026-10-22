@@ -222,6 +222,13 @@ export interface PublicOpts {
   tag?: string | null;
   kind?: PostKind;
   parent?: number;
+  /**
+   * On-chain threadId. Defaults to ZeroHash (a normal wall post). An
+   * UNENCRYPTED DM sets this to threadIdFor(me, peer) (and `tag` to the peer)
+   * so the post — though publicly readable — threads into that DM conversation
+   * with no key handshake. Reading it is identical to any other public post.
+   */
+  threadId?: string;
 }
 
 /** Post a PUBLIC message (plain / reply / repost), optionally tagging a UP. */
@@ -233,7 +240,7 @@ export async function postPublic(
   const o = normalizePublicOpts(opts);
   const wall = writeWall(signer);
   const body = encodePublicBody(text, o.kind ?? 'post', o.parent);
-  const tx = await wall.post(o.tag ?? ZERO, false, ethers.ZeroHash, body);
+  const tx = await wall.post(o.tag ?? ZERO, false, o.threadId ?? ethers.ZeroHash, body);
   await tx.wait();
   return tx.hash;
 }
@@ -371,7 +378,7 @@ export async function postPublicBlob(
 ): Promise<string> {
   const o = normalizePublicOpts(opts);
   const body = encodePublicBody(text, o.kind ?? 'post', o.parent);
-  return sendBlobPost(signer, o.tag ?? ZERO, false, ethers.ZeroHash, body, relay);
+  return sendBlobPost(signer, o.tag ?? ZERO, false, o.threadId ?? ethers.ZeroHash, body, relay);
 }
 
 /** Post an ENCRYPTED DM to `peer` via the blob lane. Seals exactly like postDm. */

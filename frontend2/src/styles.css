@@ -32,6 +32,95 @@ body { margin: 0; background: var(--bg); color: var(--fg); }
 }
 .center { text-align: center; }
 
+/* ---------- welcome / connect page ---------- */
+.welcome {
+  max-width: 540px;
+  margin: 24px auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  background:
+    radial-gradient(120% 90% at 50% -10%, rgba(255,71,133,.14), transparent 55%),
+    radial-gradient(120% 90% at 50% 110%, rgba(138,92,255,.12), transparent 55%),
+    var(--card);
+}
+.welcome-title {
+  margin: 0;
+  font-size: 2.6rem;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  background: linear-gradient(90deg, #ff4785, #8a5cff);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.welcome-tag { color: var(--fg); line-height: 1.5; margin: 2px 0 6px; max-width: 42ch; }
+.connect-cta {
+  font-size: 1.05rem;
+  font-weight: 700;
+  padding: 12px 22px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #ff4785, #8a5cff);
+  color: #fff;
+  border: 0;
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgba(255,71,133,.3);
+  transition: transform .12s ease, box-shadow .12s ease, opacity .12s ease;
+}
+.connect-cta:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 8px 26px rgba(138,92,255,.38); }
+.connect-cta:disabled { opacity: .6; cursor: default; }
+
+.whatsup {
+  margin-top: 18px;
+  text-align: left;
+  width: 100%;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+.whatsup h2 { font-size: 1.15rem; margin-bottom: 12px; text-align: center; }
+.whatsup-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.whatsup-list li { display: flex; gap: 12px; line-height: 1.45; font-size: 0.95rem; }
+.whatsup-list li b { color: var(--fg); }
+.whatsup-list li span:not(.wu-ico) { color: var(--muted); }
+.wu-ico { flex-shrink: 0; font-size: 1.3rem; width: 1.6rem; text-align: center; }
+.whatsup-foot { margin-top: 14px; text-align: center; font-style: italic; }
+
+/* mascot: a dancing dog-in-a-bun */
+.dawg-stage { filter: drop-shadow(0 10px 18px rgba(0,0,0,.35)); }
+.dawg { transform-origin: 50% 85%; animation: dawg-dance 1.1s ease-in-out infinite; }
+.dawg-head { transform-origin: 60px 48px; animation: dawg-bob 1.1s ease-in-out infinite; }
+.dawg-arm-l { transform-origin: 38px 70px; animation: dawg-arm 1.1s ease-in-out infinite; }
+.dawg-arm-r { transform-origin: 82px 70px; animation: dawg-arm 1.1s ease-in-out infinite reverse; }
+.dawg-legs { transform-origin: 60px 104px; animation: dawg-legs 1.1s ease-in-out infinite; }
+.dawg-spark { animation: dawg-spark 1.6s ease-in-out infinite; }
+.dawg-spark.s2 { animation-delay: .3s; }
+.dawg-spark.s3 { animation-delay: .6s; }
+
+@keyframes dawg-dance {
+  0%, 100% { transform: rotate(-5deg) translateY(0); }
+  50% { transform: rotate(5deg) translateY(-5px); }
+}
+@keyframes dawg-bob {
+  0%, 100% { transform: rotate(4deg); }
+  50% { transform: rotate(-4deg); }
+}
+@keyframes dawg-arm {
+  0%, 100% { transform: rotate(-12deg); }
+  50% { transform: rotate(14deg); }
+}
+@keyframes dawg-legs {
+  0%, 100% { transform: translateX(-2px); }
+  50% { transform: translateX(2px); }
+}
+@keyframes dawg-spark {
+  0%, 100% { opacity: .2; transform: scale(.6); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dawg, .dawg-head, .dawg-arm-l, .dawg-arm-r, .dawg-legs, .dawg-spark { animation: none; }
+}
+
 h1 { color: var(--accent); margin-top: 0; }
 h2, h3 { margin-top: 0; }
 
@@ -335,6 +424,18 @@ section { margin-top: 20px; }
 .bubbletext { white-space: pre-wrap; word-break: break-word; }
 .bubblemeta { margin-top: 3px; opacity: .7; }
 .bubblemeta a { color: inherit; }
+/* Unencrypted DM bubble: dashed, amber-tinted so "anyone can read this" reads at a glance. */
+.bubble.open { border-style: dashed; background: rgba(240,180,60,.10); border-color: rgba(240,180,60,.45); }
+.bubble.mine.open { background: rgba(240,180,60,.14); }
+
+/* DM composer privacy toggle (🔒 Encrypted / 🌐 Public). */
+.dmlock { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.lockpill { border: 1px solid var(--border); background: var(--card); border-radius: 999px; padding: 3px 10px; cursor: pointer; font-weight: 600; }
+.lockpill.on { border-color: rgba(76,175,120,.5); background: rgba(76,175,120,.12); color: #4caf78; }
+.lockpill:not(.on) { border-color: rgba(240,180,60,.5); background: rgba(240,180,60,.12); color: #d9a13b; }
+
+/* Self-tag hint under the mention box. */
+.taghint { margin: 4px 0 0; }
 
 .ok { color: #4caf78; }
 .warn { color: #d8a657; }

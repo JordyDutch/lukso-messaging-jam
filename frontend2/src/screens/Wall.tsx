@@ -341,9 +341,19 @@ export function Wall() {
   const dmThread = useMemo(() => {
     if (view.kind !== 'dm') return [];
     const tid = threadIdFor(up.address, view.address).toLowerCase();
-    return decoded.filter(
-      (p) => p.encrypted && !p.signal && p.threadId.toLowerCase() === tid,
-    );
+    const meLc2 = up.address.toLowerCase();
+    const peerLc = view.address.toLowerCase();
+    return decoded.filter((p) => {
+      if (p.signal || p.threadId.toLowerCase() !== tid) return false;
+      if (p.encrypted) return true;
+      // Unencrypted DM = a PUBLIC post carrying the DM threadId, exchanged
+      // between the two parties (tagged at one, authored by the other). It
+      // threads into this conversation even though anyone can read it.
+      const fromLc = p.from.toLowerCase();
+      const tagLc = p.tag.toLowerCase();
+      const pair = [meLc2, peerLc];
+      return pair.includes(fromLc) && pair.includes(tagLc) && fromLc !== tagLc;
+    });
   }, [decoded, view, up.address]);
 
   /** Open a DM: persist the conversation, select it, and (mobile) show thread. */
@@ -381,12 +391,13 @@ export function Wall() {
         : [],
     [timeline, profileAddr],
   );
+  // A profile's Mentions tab shows EVERY public post that @tagged them —
+  // including their own self-tags (unlike the global Mentions tab, which is
+  // "who tagged ME" and omits self). That way tagging yourself isn't a dead end.
   const profileMentions = useMemo(
     () =>
       profileAddr
-        ? publicFeed.filter(
-            (p) => p.tag.toLowerCase() === profileAddr && p.from.toLowerCase() !== profileAddr,
-          )
+        ? publicFeed.filter((p) => p.tag.toLowerCase() === profileAddr)
         : [],
     [publicFeed, profileAddr],
   );
@@ -1058,6 +1069,12 @@ function Composer({
             />
             {tag && <span className="pill">@{tag.label} <button className="link" onClick={() => { setTag(null); setTagInput(''); }}>×</button></span>}
           </div>
+          {tag && tag.address.toLowerCase() === up!.address.toLowerCase() && (
+            <p className="taghint small muted">
+              👋 That’s you — tagging yourself won’t ping you (your Mentions skip
+              your own posts), but it will show on your profile’s Mentions tab.
+            </p>
+          )}
           {hits.length > 0 && (
             <ul className="hits">
               {hits.map((h) => (
@@ -1445,24 +1462,43 @@ function DmPane({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [sig, setSig] = useState<SignOutcome | null>(null);
+  // Per-message privacy: true = sealed (end-to-end, as before); false = an
+  // unencrypted DM, a PUBLIC post tagged to the peer + carrying the DM threadId.
+  // Unencrypted needs no key handshake, so it's allowed even when `ready` is false.
+  const [encrypt, setEncrypt] = useState(true);
   const ready = meAnnounced && peerAnnounced;
   const { transport } = useTransport();
   const peerLabel = useName(peer.address) || peer.name;
+
+  // Encrypted send is gated on the key handshake; unencrypted never is.
+  const canSend = encrypt ? ready : true;
 
   async function send() {
     setBusy(true);
     setErr(null);
     setSig(null);
     try {
-      const dmArgs = {
-        signer: up!.signer,
-        myAddr: up!.address,
-        myConvPriv: up!.convPriv,
-        peerAddr: peer.address,
-        text: text.trim(),
-      };
-      if (transport === 'blob') await postDmBlob({ ...dmArgs, relay: { ...relay, onSign: setSig } });
-      else await postDm(dmArgs);
+      if (encrypt) {
+        const dmArgs = {
+          signer: up!.signer,
+          myAddr: up!.address,
+          myConvPriv: up!.convPriv,
+          peerAddr: peer.address,
+          text: text.trim(),
+        };
+        if (transport === 'blob') await postDmBlob({ ...dmArgs, relay: { ...relay, onSign: setSig } });
+        else await postDm(dmArgs);
+      } else {
+        // Unencrypted DM: a public post, tagged at the peer, carrying the DM
+        // threadId so it threads into this conversation. Publicly readable.
+        const opts = {
+          tag: peer.address,
+          threadId: threadIdFor(up!.address, peer.address),
+        };
+        if (transport === 'blob')
+          await postPublicBlob(up!.signer, text.trim(), opts, { ...relay, onSign: setSig });
+        else await postPublic(up!.signer, text.trim(), opts);
+      }
       setText('');
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -1480,6 +1516,8 @@ function DmPane({
           🔒 Encrypted DM is locked until both parties announce their conversation key.
           {!meAnnounced && ' Announce yours from the top-left.'}
           {!peerAnnounced && ` ${peer.name} must connect and announce too.`}
+          {' '}Or switch the composer to 🌐 Public to message them now — readable by
+          anyone, but no key handshake needed.
         </div>
       )}
 
@@ -1489,11 +1527,12 @@ function DmPane({
         {thread.length === 0 && <li className="muted empty">No messages yet. Say hi 👋</li>}
         {[...thread].reverse().map((p) => {
           const mine = p.from.toLowerCase() === meLc;
+          const open = !p.encrypted; // an unencrypted DM — publicly readable
           return (
-            <li key={p.id} className={mine ? 'bubble mine' : 'bubble'}>
+            <li key={p.id} className={`bubble${mine ? ' mine' : ''}${open ? ' open' : ''}`}>
               <div className="bubbletext"><Body p={p} /></div>
               <div className="bubblemeta small muted">
-                {fmt(p.timestamp)} · <a href={`${EXPLORER}/tx/${p.txHash}`} target="_blank" rel="noreferrer">on-chain ↗</a>
+                {open ? '🌐 public · ' : ''}{fmt(p.timestamp)} · <a href={`${EXPLORER}/tx/${p.txHash}`} target="_blank" rel="noreferrer">on-chain ↗</a>
               </div>
             </li>
           );
@@ -1501,21 +1540,43 @@ function DmPane({
       </ul>
 
       <div className="composer dmcomposer">
+        <div className="dmlock small">
+          <button
+            type="button"
+            className={`lockpill${encrypt ? ' on' : ''}`}
+            aria-pressed={encrypt}
+            onClick={() => setEncrypt((v) => !v)}
+            title={encrypt ? 'Encrypted — only the two of you can read it' : 'Unencrypted — anyone can read this'}
+          >
+            {encrypt ? '🔒 Encrypted' : '🌐 Public'}
+          </button>
+          <span className="muted">
+            {encrypt
+              ? 'Only you two can read it.'
+              : 'Anyone can read this — but no key needed, and it still threads here.'}
+          </span>
+        </div>
         <textarea
-          placeholder={ready ? `Encrypted message to ${peerLabel}…` : 'Locked until both keys announced'}
+          placeholder={
+            canSend
+              ? encrypt
+                ? `Encrypted message to ${peerLabel}…`
+                : `Public message to ${peerLabel} (anyone can read)…`
+              : 'Encrypted is locked until both keys announced — or switch to 🌐 Public'
+          }
           value={text}
           onChange={(e) => setText(e.target.value)}
-          disabled={!ready}
+          disabled={!canSend}
           maxLength={800}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey && ready && text.trim() && !busy) {
+            if (e.key === 'Enter' && !e.shiftKey && canSend && text.trim() && !busy) {
               e.preventDefault();
               send();
             }
           }}
         />
-        <button disabled={!ready || busy || !text.trim()} onClick={send}>
-          {busy ? 'Sealing…' : '🔒 Send'}
+        <button disabled={!canSend || busy || !text.trim()} onClick={send}>
+          {busy ? (encrypt ? 'Sealing…' : 'Posting…') : encrypt ? '🔒 Send' : '🌐 Send'}
         </button>
         {err && <p className="error">{err}</p>}
         <SignPanel outcome={sig} />
