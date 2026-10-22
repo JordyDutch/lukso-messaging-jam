@@ -79,14 +79,29 @@ export function Wall() {
   const { state, dispatch } = useApp();
   const up = state.up!;
 
-  // Relay context for the gas-less LSP25 blob lane (SIGNATURE-first model, see
-  // relay.ts). The dApp never needs the controller EOA: the extension signs the
-  // LSP25 digest and the relayer recovers + validates + meters + sends the
-  // Type-3 tx. We only need the UP address here. Panes attach their own `onSign`
-  // diagnostic so the UI can show exactly what the extension did when asked to
-  // sign (the one unknown only a real browser confirms). See
-  // docs/BLOB-ARCHITECTURE.md §relay and poc/lab-ups/blob-sigrelay-spike.mjs.
-  const relay = useMemo<RelayCtx>(() => ({ up: up.address }), [up]);
+  // Resolve the connected UP's LSP3 name once: `myLabel` is the full name#hash
+  // for display, `myRawName` is the bare LSP3 name (or '') embedded in the
+  // author proof of relayed posts.
+  const myLabel = useName(up.address);
+  const [myRawName, setMyRawName] = useState<string>('');
+  useEffect(() => {
+    let live = true;
+    nameOf(up.address).then((n) => live && setMyRawName(n ?? '')).catch(() => {});
+    return () => { live = false; };
+  }, [up.address]);
+
+  // Relay context for the gas-less blob lane (AUTHOR-SIGNATURE model, Option B,
+  // see relay.ts). The dApp never needs the controller EOA: the extension
+  // personal_signs a canonical message binding the post to this UP, and the
+  // relayer recovers the signer, verifies it controls the UP, and posts the
+  // blob as itself with the author proof (UP + name + signature) in `meta`.
+  // `upName` is the resolved LSP3 name, carried for display on read. Panes
+  // attach their own `onSign` diagnostic so the UI can show exactly what the
+  // extension did when asked to sign.
+  const relay = useMemo<RelayCtx>(
+    () => ({ up: up.address, upName: myRawName }),
+    [up, myRawName],
+  );
 
   const [raw, setRaw] = useState<WallPost[]>([]);
   const [decoded, setDecoded] = useState<WallPost[]>([]);
@@ -159,7 +174,7 @@ export function Wall() {
       <aside className="sidebar">
         <div className="me">
           <div className="small muted">connected</div>
-          <div className="mono small">{short(up.address)}</div>
+          <div className="mono small" title={up.address}>{myLabel || short(up.address)}</div>
           <div className="small">
             {state.announced ? (
               <span className="ok">● key announced</span>

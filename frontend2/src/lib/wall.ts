@@ -11,7 +11,7 @@
 // side has announced its conv pubkey).
 
 import { ethers } from 'ethers';
-import { WALL_ADDRESS } from './config';
+import { WALL_ADDRESS, CHAIN_ID } from './config';
 import { getReadProvider } from './rpc';
 import { encodeBlob, blobTxFields, versionedHashFor, fetchBlobBody } from './blob';
 import {
@@ -27,7 +27,9 @@ import { convPubOf } from './registry';
 import {
   relayerConfigured,
   buildBlobRelayRequest,
+  buildAuthMessage,
   sendViaRelayer,
+  isControllerOf,
   type SignOutcome,
 } from './relay';
 
@@ -35,31 +37,69 @@ export type { SignOutcome } from './relay';
 
 /**
  * Optional relay context. When present AND a relayer is configured, blob posts
- * go through the LSP25 gas-less path: the extension SIGNS the LSP25 digest and
- * the relayer (which recovers the controller, validates perms, meters, and
- * attaches the blob) sends the Type-3 tx via the UP's KeyManager. PostedBlob.from
- * = the UP. The frontend never needs the controller address. See relay.ts and
- * poc/lab-ups/blob-sigrelay-spike.mjs.
+ * go through the AUTHOR-SIGNATURE gas-less path (Option B): the extension
+ * personal_signs a canonical message binding the post to the UP; the relayer
+ * recovers the signer, verifies it is an LSP6 controller of the UP, and posts
+ * the blob AS ITSELF with the author proof embedded in `meta`. On-chain
+ * PostedBlob.from = the relayer; the authoritative author = `up` (verified from
+ * meta on read). The frontend never needs the controller address. See relay.ts.
  */
 export interface RelayCtx {
-  /** the user's UP address (PostedBlob.from will be this). */
+  /** the user's UP address (the authoritative author recorded in meta). */
   up: string;
+  /** the user's LSP3 profile name, embedded in meta for display (optional). */
+  upName?: string;
   /**
    * Optional diagnostic hook — receives exactly what the extension did when
-   * asked to sign the LSP25 digest (signature bytes, recovered address, or the
-   * rejection). Used by the UI signature-test panel.
+   * asked to sign the canonical author message (signature bytes / recovered
+   * address / rejection). Used by the UI signature panel.
    */
   onSign?: (outcome: SignOutcome) => void;
 }
 
-/** Thrown when the extension could not produce the LSP25 signature; carries the
- *  diagnostic so the UI can show precisely what happened. */
+/** Thrown when the extension could not produce the author signature; carries
+ *  the diagnostic so the UI can show precisely what happened. */
 export class RelaySignError extends Error {
   outcome: SignOutcome;
   constructor(outcome: SignOutcome) {
     super(outcome.error ? `extension could not sign: ${outcome.error}` : 'extension did not sign');
     this.name = 'RelaySignError';
     this.outcome = outcome;
+  }
+}
+
+// ---- author-proof meta (Option B) -----------------------------------------
+// Binary meta packed by the relayer (see blob-relayer-server.mjs packMeta):
+//   v(1=2) | scheme(1=1) | up(20) | nonce u64 BE(8) |
+//   sigLen(1) | sig(sigLen) | nameLen(1) | name(utf8)
+const META_V2 = 2;
+const META_SCHEME_AUTHSIG = 1;
+
+export interface AuthMeta {
+  up: string;
+  nonce: string;
+  sig: string;
+  name: string;
+}
+
+/** Parse the binary author-proof meta; null if it isn't the v2 authsig scheme. */
+export function unpackAuthMeta(metaHex: string | undefined): AuthMeta | null {
+  if (!metaHex || metaHex === '0x') return null;
+  try {
+    const b = ethers.getBytes(metaHex);
+    if (b.length < 2 + 20 + 8 + 1 || b[0] !== META_V2 || b[1] !== META_SCHEME_AUTHSIG) return null;
+    let o = 2;
+    const up = ethers.getAddress(ethers.hexlify(b.slice(o, o + 20))); o += 20;
+    let nonce = 0n;
+    for (let i = 0; i < 8; i++) nonce = (nonce << 8n) | BigInt(b[o + i]); o += 8;
+    const sigLen = b[o]; o += 1;
+    if (o + sigLen > b.length) return null;
+    const sig = ethers.hexlify(b.slice(o, o + sigLen)); o += sigLen;
+    const nameLen = o < b.length ? b[o] : 0; o += 1;
+    const name = nameLen && o + nameLen <= b.length ? dec.decode(b.slice(o, o + nameLen)) : '';
+    return { up, nonce: nonce.toString(), sig, name };
+  } catch {
+    return null;
   }
 }
 
@@ -87,6 +127,8 @@ export interface WallPost {
   bodyRaw: string; // hex bytes (text: from event; blob: recovered from beacon)
   blobHash?: string; // blob lane: the anchored KZG versioned hash
   metaRaw?: string; // blob lane: tiny framing bytes from the event
+  authorName?: string; // blob lane (relayed): LSP3 name carried in author proof
+  authorVerified?: boolean; // blob lane (relayed): author signature verified → `from` is the UP
   // filled in by the decoder:
   text?: string; // decoded plaintext, or decrypted DM text
   locked?: boolean; // encrypted and we cannot decrypt
@@ -189,22 +231,23 @@ async function sendBlobPost(
 ): Promise<string> {
   const blob = encodeBlob(body);
   const blobHash = await versionedHashFor(blob);
-  const meta = enc.encode(JSON.stringify({ v: 1, len: body.length }));
 
-  // Path 1: LSP25 signature path (and gas-less relay when configured).
-  // Runs whenever a RelayCtx + provider is present — even with NO relayer — so
-  // the extension's signing behaviour can be observed in a real browser.
+  // Path 1: author-signature gas-less relay (Option B). Runs whenever a RelayCtx
+  // + provider is present — even with NO relayer — so the extension's signing
+  // behaviour can be observed in a real browser. The relayer builds the on-chain
+  // `meta` (author proof); the frontend only signs the canonical message.
   if (relay && 'provider' in signer && signer.provider) {
     const signerAddress = await signer.getAddress();
     const { req, outcome } = await buildBlobRelayRequest({
       signer: signer as ethers.JsonRpcSigner,
       signerAddress,
       up: relay.up,
+      upName: relay.upName ?? '',
       tag,
       encrypted,
       threadId,
       blobHash,
-      meta,
+      len: body.length,
       blobHex: ethers.hexlify(blob),
     });
     relay.onSign?.(outcome);
@@ -220,7 +263,9 @@ async function sendBlobPost(
     return sendViaRelayer(req);
   }
 
-  // Path 2: direct Type-3 from the signer.
+  // Path 2: direct Type-3 from the signer (no relay). PostedBlob.from = signer
+  // (the UP itself), so no author proof is needed; meta carries tiny framing.
+  const meta = enc.encode(JSON.stringify({ v: 1, len: body.length }));
   const data = IFACE.encodeFunctionData('postBlob', [
     tag,
     encrypted,
@@ -312,6 +357,34 @@ export async function decodePosts(
         continue;
       }
       p = { ...p, bodyRaw: ethers.hexlify(got.payload) };
+
+      // Author resolution (Option B): a relayed blob post is on-chain `from` the
+      // relayer, with the real author proven in `meta`. Now that the body is
+      // recovered we know `len`, so we can rebuild the exact signed message,
+      // recover the signer, and re-verify it controls `meta.up`. On success the
+      // author = meta.up. Falls back to the on-chain `from` for direct
+      // (non-relayed) posts or any meta/signature that doesn't verify.
+      const am = unpackAuthMeta(p.metaRaw);
+      if (am) {
+        try {
+          const message = buildAuthMessage({
+            chainId: CHAIN_ID,
+            wall: WALL_ADDRESS,
+            up: am.up,
+            tag: p.tag,
+            encrypted: p.encrypted,
+            threadId: p.threadId,
+            blobHash: p.blobHash,
+            len: got.payload.length,
+            nonce: am.nonce,
+          });
+          const recovered = ethers.verifyMessage(message, am.sig);
+          const ok = await isControllerOf(readProvider, am.up, recovered).catch(() => false);
+          p = { ...p, from: ok ? am.up : p.from, authorName: ok ? am.name : undefined, authorVerified: ok };
+        } catch {
+          /* leave p.from as the on-chain relayer address */
+        }
+      }
     }
 
     if (!p.encrypted) {
