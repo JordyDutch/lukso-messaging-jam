@@ -29,7 +29,8 @@ import {
   type SignOutcome,
 } from '../lib/wall';
 import { useTransport } from '../lib/transport';
-import { convPubOf } from '../lib/registry';
+import { convPubOf, announceConvPub } from '../lib/registry';
+import { convPubToBytes32 } from '../lib/up';
 import { threadIdFor } from '../lib/crypto';
 import { resolveName, nameOf, profileOf, upLabel, type ProfileHit } from '../lib/names';
 import { watchRoster, type RosterEntry } from '../lib/roster';
@@ -206,6 +207,104 @@ function Avatar({
     <span className="avatar" style={style}>
       {inner}
     </span>
+  );
+}
+
+/**
+ * KeyStatus — the brandbar 🔑 affordance. Replaces the old button that
+ * dispatched `needAnnounce` → bounced to the Announce screen, which (when you
+ * were already announced) re-checked the chain and instantly navigated back,
+ * so it just *flashed* for ~0.5s. Now it opens a stable anchored popover you
+ * dismiss yourself: it shows your conv-key status + pubkey, with an inline
+ * "Announce" action only when you haven't announced yet. No navigation.
+ */
+function KeyStatus({
+  up,
+  announced,
+  dispatch,
+}: {
+  up: UpState;
+  announced: boolean;
+  dispatch: ReturnType<typeof useApp>['dispatch'];
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [tx, setTx] = useState<string | null>(null);
+  const wrap = useRef<HTMLDivElement | null>(null);
+  const myConvPub = useMemo(() => convPubToBytes32(up!.convPub), [up]);
+
+  // Close on outside-click or Escape — a popover, not a fly-by toast.
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (wrap.current && !wrap.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  async function announce() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const hash = await announceConvPub(up!.signer, myConvPub);
+      setTx(hash);
+      dispatch({ type: 'announced' });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="keystatus" ref={wrap}>
+      <button
+        className={`iconbtn${announced ? '' : ' warn'}`}
+        title="Conversation key status"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {announced ? '🔑' : '⚠️'}
+      </button>
+      {open && (
+        <div className="keypop" role="dialog" aria-label="Conversation key status">
+          <div className="keypop-head">
+            <span className={announced ? 'ok' : 'warn'}>
+              {announced ? '🔑 Key announced' : '⚠️ Key not announced'}
+            </span>
+            <button className="keypop-x" aria-label="Close" onClick={() => setOpen(false)}>×</button>
+          </div>
+          <p className="small muted">
+            {announced
+              ? 'Your X25519 conversation key is published on-chain — peers can derive the shared key and decrypt your sealed DMs.'
+              : 'Encrypted DMs are locked until you publish your X25519 conversation key on-chain. One signature, a little gas, done once. Public wall posts don’t need it.'}
+          </p>
+          <div className="keypop-row">
+            <span className="muted">conv pubkey</span>
+            <span className="mono small">{short(myConvPub)}</span>
+          </div>
+          {tx && (
+            <p className="small">
+              Announced:{' '}
+              <a href={`${EXPLORER}/tx/${tx}`} target="_blank" rel="noreferrer">{tx.slice(0, 10)}…</a>
+            </p>
+          )}
+          {err && <p className="error small">{err}</p>}
+          {!announced && !tx && (
+            <button className="keypop-cta" disabled={busy} onClick={announce}>
+              {busy ? 'Announcing…' : 'Announce key'}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -410,10 +509,7 @@ export function Wall() {
       <aside className="chatlist">
         <header className="brandbar">
           <UpDogLogo />
-          <button className="iconbtn" title="Announce / key status"
-            onClick={() => dispatch({ type: 'needAnnounce' })}>
-            {state.announced ? '🔑' : '⚠️'}
-          </button>
+          <KeyStatus up={up} announced={state.announced} dispatch={dispatch} />
         </header>
 
         <div className="mecard">
