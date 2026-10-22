@@ -353,9 +353,15 @@ export async function decodePosts(
       }
       const got = await fetchBlobBody(readProvider, p.txHash, p.blobHash);
       if (!got.ok || !got.payload) {
+        // Diagnostic: a blob that can't be recovered renders as "expired". Log
+        // WHY (pruned vs. a fetch/CORS/cert error) so a blank wall is debuggable
+        // — an `error` reason means the beacon fetch itself failed in-browser,
+        // NOT that the body is genuinely gone.
+        console.warn(`[wall-read] id=${p.id} blob body unavailable:`, got.reason, got.error ?? '');
         out.push({ ...p, pruned: got.reason === 'pruned' || got.reason === 'mismatch' });
         continue;
       }
+      console.info(`[wall-read] id=${p.id} blob body recovered (${got.payload.length}B)`);
       p = { ...p, bodyRaw: ethers.hexlify(got.payload) };
 
       // Author resolution (Option B): a relayed blob post is on-chain `from` the
@@ -489,6 +495,9 @@ export async function watchWall(
 
   const emit = () => {
     const all = [...byId.values()].sort((x, y) => x.id - y.id);
+    // Diagnostic: how many raw posts the poller sees (text + blob). If this is
+    // nonzero but the wall is blank, the loss is in decode/display, not fetch.
+    console.info(`[wall-read] poller has ${all.length} posts (ids ${all.map((p) => p.id).join(',') || '—'})`);
     onPosts(all);
   };
 

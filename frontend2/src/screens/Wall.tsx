@@ -123,16 +123,28 @@ export function Wall() {
     return () => off?.();
   }, []);
 
-  // decode (and decrypt what we can) whenever raw changes
+  // decode (and decrypt what we can) whenever raw changes.
+  //
+  // Depend ONLY on `raw` and the UP *address* (a stable string) — NOT on
+  // `up.convPriv` (a Uint8Array) or the `up` object, whose references change on
+  // every app-context re-render (poller/roster/announce dispatches). A fresh
+  // reference each render would re-fire this effect, and its cleanup cancels the
+  // in-flight decode (`live=false`) before it reaches setDecoded. A full feed
+  // decode is slow (one beacon fetch per blob), so under that thrash it NEVER
+  // completes → `decoded` stays empty → the wall shows "No public posts yet"
+  // even though every body recovers. The convPriv for a given address is fixed,
+  // so reading it fresh inside the effect is safe. (Blank-wall fix 2026-10-22.)
+  const convPriv = up.convPriv;
   useEffect(() => {
     let live = true;
-    decodePosts(raw, { addr: up.address, convPriv: up.convPriv }).then((d) => {
+    decodePosts(raw, { addr: up.address, convPriv }).then((d) => {
       if (live) setDecoded(d);
     });
     return () => {
       live = false;
     };
-  }, [raw, up.address, up.convPriv]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [raw, up.address]);
 
   // check announce status for known peers (for DM gating)
   useEffect(() => {
