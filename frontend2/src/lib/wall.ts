@@ -28,18 +28,39 @@ import {
   relayerConfigured,
   buildBlobRelayRequest,
   sendViaRelayer,
+  type SignOutcome,
 } from './relay';
+
+export type { SignOutcome } from './relay';
 
 /**
  * Optional relay context. When present AND a relayer is configured, blob posts
- * go through the LSP25 gas-less path (relayer builds the Type-3 tx, UP is the
- * author) instead of asking the wallet to sign a Type-3 tx itself. See relay.ts.
+ * go through the LSP25 gas-less path: the extension SIGNS the LSP25 digest and
+ * the relayer (which recovers the controller, validates perms, meters, and
+ * attaches the blob) sends the Type-3 tx via the UP's KeyManager. PostedBlob.from
+ * = the UP. The frontend never needs the controller address. See relay.ts and
+ * poc/lab-ups/blob-sigrelay-spike.mjs.
  */
 export interface RelayCtx {
   /** the user's UP address (PostedBlob.from will be this). */
   up: string;
-  /** the controller EOA that signs the LSP25 digest (from the extension). */
-  controller: string;
+  /**
+   * Optional diagnostic hook — receives exactly what the extension did when
+   * asked to sign the LSP25 digest (signature bytes, recovered address, or the
+   * rejection). Used by the UI signature-test panel.
+   */
+  onSign?: (outcome: SignOutcome) => void;
+}
+
+/** Thrown when the extension could not produce the LSP25 signature; carries the
+ *  diagnostic so the UI can show precisely what happened. */
+export class RelaySignError extends Error {
+  outcome: SignOutcome;
+  constructor(outcome: SignOutcome) {
+    super(outcome.error ? `extension could not sign: ${outcome.error}` : 'extension did not sign');
+    this.name = 'RelaySignError';
+    this.outcome = outcome;
+  }
 }
 
 export const WALL_ABI = [
@@ -146,11 +167,14 @@ const IFACE = new ethers.Interface(WALL_ABI);
 /**
  * Build + send a postBlob carrying `body` in a blob. Two paths:
  *
- *  1. RELAY (preferred when a relayer is configured AND a RelayCtx is given):
- *     the UP controller signs the LSP25 digest (the extension CAN do this) and a
- *     Type-3-capable relayer attaches the blob + pays gas via the UP's
- *     KeyManager. PostedBlob.from = the UP. Works even though the extension
- *     can't sign Type-3 itself. Proven on mainnet (blob-lsp25-spike.mjs).
+ *  1. RELAY / SIGNATURE TEST (when a RelayCtx is given and the signer exposes a
+ *     provider): ask the extension to sign the LSP25 digest — the one thing only
+ *     a real browser confirms. The SignOutcome (signature bytes / recovered
+ *     address / rejection) is surfaced via `relay.onSign`. If a relayer is
+ *     configured we also POST it and return the real Type-3 tx hash (end-to-end,
+ *     PostedBlob.from = the UP; proven on mainnet, blob-sigrelay-spike.mjs). If
+ *     NO relayer is configured, the signature is surfaced and we throw a
+ *     RelaySignError-free sentinel so the UI knows there was nothing to submit.
  *
  *  2. DIRECT: the signer sends the Type-3 tx itself. Only works if the wallet
  *     signs Type-3 (most UP extensions don't yet). PostedBlob.from = the signer.
@@ -167,11 +191,14 @@ async function sendBlobPost(
   const blobHash = await versionedHashFor(blob);
   const meta = enc.encode(JSON.stringify({ v: 1, len: body.length }));
 
-  // Path 1: LSP25 gas-less relay.
-  if (relay && relayerConfigured() && 'provider' in signer && signer.provider) {
-    const req = await buildBlobRelayRequest({
+  // Path 1: LSP25 signature path (and gas-less relay when configured).
+  // Runs whenever a RelayCtx + provider is present — even with NO relayer — so
+  // the extension's signing behaviour can be observed in a real browser.
+  if (relay && 'provider' in signer && signer.provider) {
+    const signerAddress = await signer.getAddress();
+    const { req, outcome } = await buildBlobRelayRequest({
       signer: signer as ethers.JsonRpcSigner,
-      controllerAddress: relay.controller,
+      signerAddress,
       up: relay.up,
       tag,
       encrypted,
@@ -180,6 +207,16 @@ async function sendBlobPost(
       meta,
       blobHex: ethers.hexlify(blob),
     });
+    relay.onSign?.(outcome);
+    if (!req) throw new RelaySignError(outcome);
+    if (!relayerConfigured()) {
+      // Signature obtained but there is nothing to submit to. Surface it as a
+      // clear, non-fatal-looking error the UI shows alongside the outcome.
+      throw new RelaySignError({
+        ...outcome,
+        error: 'signature OK — no relayer configured, nothing submitted',
+      });
+    }
     return sendViaRelayer(req);
   }
 

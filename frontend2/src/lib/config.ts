@@ -103,23 +103,29 @@ export const DEFAULT_TRANSPORT: Transport =
     : 'blob');
 
 /**
- * LSP25 blob RELAYER endpoint (optional). When set, blob posts are routed
- * through a relayer that builds the EIP-4844 Type-3 tx for us: the user's UP
- * controller signs the LSP25 `executeRelayCall` digest (the UP extension can do
- * this today — it's the same gas-less-tx signature it already produces), and
- * the relayer EOA attaches the blob + pays gas, calling the UP's KeyManager so
- * the UP is msg.sender inside WallV2.postBlob (PostedBlob.from = the UP).
+ * LSP25 blob RELAYER endpoint (optional). SIGNATURE-first model (relay.ts): the
+ * frontend asks the extension to sign the LSP25 `executeRelayCall` digest and
+ * hands the relayer ONLY that signature + the request. The relayer recovers the
+ * signer, validates it is an authorized LSP6 controller of the UP, meters
+ * (DAWG/LSP7), attaches the blob, pays gas, and calls the UP's KeyManager so the
+ * UP is msg.sender inside WallV2.postBlob (PostedBlob.from = the UP). The dApp
+ * never needs the controller EOA.
  *
- * PROVEN on mainnet (poc/lab-ups/blob-lsp25-spike.mjs, 2026-10-22): blobhash(0)
- * is read correctly 3 call frames deep, zero WallV2 change. The ONLY reason a
- * relayer is needed is that no wallet (UP extension) nor the hosted LUKSO relay
- * service signs Type-3 yet. If VITE_BLOB_RELAYER_URL is unset, blob posts are
- * sent directly from the signer (works only if the wallet signs Type-3) and the
- * UI falls back to the text lane when it can't (see transport.ts / blob.ts).
+ * PROVEN on mainnet (poc/lab-ups/blob-sigrelay-spike.mjs, 2026-10-22): blobhash(0)
+ * is read 3 call frames deep, zero WallV2 change, recover-and-validate works.
  *
- * The endpoint must accept POST {keyManager, signature, nonce, validityTimestamps,
- * payload, blob} (blob = 0x-hex of the 128 KB field-element-encoded blob) and
- * return { txHash }. See docs/BLOB-ARCHITECTURE.md §relay and relay.ts.
+ * Two endpoints:
+ *   GET  {url}/nonce?up=<up>  -> { keyManager, nonce, validityTimestamps? }
+ *        (the relayer names the controller + returns its getNonce; the frontend
+ *        can't, because the extension abstracts the controller away)
+ *   POST {url}/execute        body { up, keyManager, signature, nonce,
+ *        validityTimestamps, payload, blob } -> { txHash }
+ *        (blob = 0x-hex of the 128 KB field-element-encoded blob)
+ *
+ * If VITE_BLOB_RELAYER_URL is unset: blob posts still run the SIGNATURE TEST
+ * (keyManager read on-chain, nonce 0) and surface what the extension did, but
+ * nothing is submitted. Direct Type-3 is used only outside the relay path (works
+ * only if the wallet signs Type-3). See docs/BLOB-ARCHITECTURE.md §relay.
  */
 export const BLOB_RELAYER_URL: string | null =
   (import.meta.env?.VITE_BLOB_RELAYER_URL as string | undefined) ?? null;

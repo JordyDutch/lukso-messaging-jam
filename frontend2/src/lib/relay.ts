@@ -1,23 +1,23 @@
-// relay.ts — LSP25 gas-less blob relay.
+// relay.ts — LSP25 gas-less blob relay, SIGNATURE-first model.
 //
-// Why: a Type-3 (EIP-4844 blob) tx is an OUTER EOA tx, so msg.sender is whoever
-// signs it with a secp256k1 key. The UP Browser Extension won't sign Type-3, and
-// a UP cannot send Type-3 via LSP0.execute. The fix — proven headless on LUKSO
-// mainnet (poc/lab-ups/blob-lsp25-spike.mjs) — is the EXISTING LSP25 relay path:
+// Architecture (proven on LUKSO mainnet, poc/lab-ups/blob-sigrelay-spike.mjs):
+// the frontend hands the relayer ONLY a signature + the relay request; it never
+// knows (and cannot get) the UP's controller EOA — the UP extension returns the
+// UP address and abstracts the controller. The backend recovers the signer from
+// the signature, validates it is an authorized LSP6 controller of the UP, meters
+// (DAWG/LSP7), and sends the Type-3 blob tx via the UNMODIFIED
+// KeyManager.executeRelayCall. blobhash(0) binds 3 frames deep → PostedBlob.from
+// is the UP, zero WallV2 change.
 //
-//   relayer EOA  -- Type-3 tx, blob attached -->  UP.KeyManager.executeRelayCall(
-//       sig, nonce, validityTimestamps,
-//       payload = UP.execute(0, WALL, 0, postBlob(tag, enc, threadId, blobHash, meta)))
+// Frontend POSTs { up, signature, nonce, validityTimestamps, payload, blob }.
+// The nonce comes from the backend (GET /nonce?up=…) because the frontend can't
+// name the controller to call getNonce itself.
 //
-// `blobhash(0)` is a transaction-level opcode, so it is still read correctly 3
-// call frames deep (EOA → KeyManager → UP → Wall). Inside postBlob msg.sender is
-// the UP, so PostedBlob.from = the real author, with ZERO WallV2 change. The
-// user's controller only ever SIGNS (the LSP25 digest); the relayer pays gas and
-// attaches the blob.
-//
-// This module prepares the signed relay request in the browser and POSTs it to a
-// configured relayer (config.BLOB_RELAYER_URL). The relayer is a tiny Type-3-
-// capable service the team runs; it does NOT need the user's keys.
+// SIGNATURE FORMAT (the one real in-browser unknown): LSP25 verifies an EIP-191
+// v0 signature over the RAW 32-byte digest (no personal-message prefix). We ask
+// the extension to produce it. Different extensions expose this differently; we
+// try eth_sign first (raw-hash), and the returned signature + any error is
+// surfaced to the UI so a human tester can see EXACTLY what the extension did.
 
 import { ethers } from 'ethers';
 import { CHAIN_ID, LSP25_VERSION, WALL_ADDRESS, BLOB_RELAYER_URL } from './config';
@@ -26,7 +26,6 @@ const UP_ABI = [
   'function owner() view returns (address)',
   'function execute(uint256 operationType, address target, uint256 value, bytes data) payable returns (bytes)',
 ];
-const KM_ABI = ['function getNonce(address signer, uint128 channel) view returns (uint256)'];
 const WALL_ABI = [
   'function postBlob(address tag, bool encrypted, bytes32 threadId, bytes32 blobHash, bytes meta) external',
 ];
@@ -44,8 +43,7 @@ export function relayerConfigured(): boolean {
  * stripped), keccak256 of:
  *   0x19 00 <keyManager> <LSP25_VERSION u256> <chainId u256> <nonce u256>
  *        <validityTimestamps u256> <value u256> <payload bytes>
- * This is signed as a RAW 32-byte hash (no eth-sign prefix). Matches the mainnet
- * spike byte-for-byte.
+ * Signed as a RAW 32-byte hash. Matches the mainnet spike byte-for-byte.
  */
 export function lsp25Digest(
   keyManager: string,
@@ -71,6 +69,7 @@ export async function keyManagerOf(
 }
 
 export interface RelayRequest {
+  up: string;
   keyManager: string;
   signature: string;
   nonce: string; // decimal string (uint256 doesn't JSON-serialize)
@@ -80,15 +79,50 @@ export interface RelayRequest {
   blob: string;
 }
 
+/** Backend /nonce response: the backend picks the UP's controller and returns
+ *  its KeyManager + current nonce (the frontend can't name the controller). */
+interface NonceResponse {
+  keyManager: string;
+  nonce: string;
+  validityTimestamps?: string;
+}
+
 /**
- * Build + sign an LSP25 relay request for a postBlob call. `blobHex` is the
- * encoded blob (from encodeBlob); `blobHash` is its versioned hash (anchored on
- * chain). The signer is the UP's controller (via the extension). Signs the raw
- * LSP25 digest with eth_sign (no prefix) — the exact form LSP25 verifies.
+ * Ask the relayer for the nonce to sign for this UP. The relayer reads the UP's
+ * AddressPermissions[] and returns the blob-permitted controller's getNonce.
+ */
+async function fetchRelayNonce(up: string): Promise<NonceResponse> {
+  if (!BLOB_RELAYER_URL) throw new Error('no blob relayer configured');
+  const base = BLOB_RELAYER_URL.replace(/\/+$/, '');
+  const res = await fetch(`${base}/nonce?up=${up}`, { method: 'GET' });
+  if (!res.ok) throw new Error(`relayer /nonce ${res.status}: ${(await res.text().catch(() => '')).slice(0, 160)}`);
+  return (await res.json()) as NonceResponse;
+}
+
+/** What the signing attempt produced — surfaced to the UI for the human test. */
+export interface SignOutcome {
+  ok: boolean;
+  method: string; // 'eth_sign' | 'personal_sign' | …
+  signer: string; // the address the extension signed with (the UP or controller)
+  digest: string;
+  signature?: string;
+  recovered?: string; // ecrecover(digest, sig) — who the sig resolves to
+  error?: string;
+  keyManager: string;
+  nonce: string;
+}
+
+/**
+ * Build the postBlob relay payload and ask the extension to sign the LSP25
+ * digest. Returns BOTH the request (if signing succeeded) and a diagnostic
+ * SignOutcome so the UI can show exactly what the extension did — the one thing
+ * only a real browser can confirm (caveat 1). `signerAddress` is whatever the
+ * extension reports (normally the UP address); we pass it to eth_sign and let
+ * the backend recover the true controller.
  */
 export async function buildBlobRelayRequest(args: {
   signer: ethers.JsonRpcSigner;
-  controllerAddress: string;
+  signerAddress: string;
   up: string;
   tag: string;
   encrypted: boolean;
@@ -96,9 +130,8 @@ export async function buildBlobRelayRequest(args: {
   blobHash: string;
   meta: Uint8Array;
   blobHex: string;
-}): Promise<RelayRequest> {
+}): Promise<{ req: RelayRequest | null; outcome: SignOutcome }> {
   const provider = args.signer.provider;
-  const keyManager = await keyManagerOf(provider, args.up);
 
   // inner: UP.execute(CALL=0, WALL, 0, postBlob(...))
   const postBlobData = wallIface.encodeFunctionData('postBlob', [
@@ -110,43 +143,65 @@ export async function buildBlobRelayRequest(args: {
   ]);
   const payload = upIface.encodeFunctionData('execute', [0, WALL_ADDRESS, 0, postBlobData]);
 
-  const km = new ethers.Contract(keyManager, KM_ABI, provider);
-  const channel = 0n;
-  const nonce: bigint = await km.getNonce(args.controllerAddress, channel);
-  const validityTimestamps = 0n; // valid indefinitely
+  // nonce + keyManager from the backend (it names the controller, not us).
+  // When NO relayer is configured we still run the signature test standalone:
+  // read the KeyManager on-chain and sign over nonce 0. The digest won't be
+  // submittable, but the extension's signing behaviour (the real unknown) is
+  // what we're probing — see Path 1 in wall.ts.
+  let keyManager: string;
+  let nonce: bigint;
+  let validityTimestamps: bigint;
+  if (BLOB_RELAYER_URL) {
+    const r = await fetchRelayNonce(args.up);
+    keyManager = r.keyManager;
+    nonce = BigInt(r.nonce);
+    validityTimestamps = BigInt(r.validityTimestamps ?? '0');
+  } else {
+    keyManager = await keyManagerOf(provider, args.up);
+    nonce = 0n;
+    validityTimestamps = 0n;
+  }
   const value = 0n;
-
   const digest = lsp25Digest(keyManager, nonce, validityTimestamps, value, payload);
 
-  // LSP25 wants the RAW digest signed (EIP-191 v0), i.e. eth_sign over the 32
-  // bytes with no personal-message prefix. ethers' signMessage would add the
-  // prefix; use the provider's eth_sign directly.
-  const signature = (await provider.send('eth_sign', [
-    args.controllerAddress,
-    digest,
-  ])) as string;
-
-  return {
-    keyManager,
-    signature,
-    nonce: nonce.toString(),
-    validityTimestamps: validityTimestamps.toString(),
-    payload,
-    blob: args.blobHex,
+  // Ask the extension to sign the RAW digest (EIP-191 v0). Try eth_sign.
+  const outcome: SignOutcome = {
+    ok: false, method: 'eth_sign', signer: args.signerAddress, digest, keyManager, nonce: nonce.toString(),
   };
+  try {
+    const signature = (await provider.send('eth_sign', [args.signerAddress, digest])) as string;
+    outcome.signature = signature;
+    try { outcome.recovered = ethers.recoverAddress(digest, signature); } catch { /* non-standard sig */ }
+    outcome.ok = true;
+    const req: RelayRequest = {
+      up: args.up,
+      keyManager,
+      signature,
+      nonce: nonce.toString(),
+      validityTimestamps: validityTimestamps.toString(),
+      payload,
+      blob: args.blobHex,
+    };
+    return { req, outcome };
+  } catch (e) {
+    outcome.error = (e as { shortMessage?: string; message?: string }).shortMessage
+      ?? (e as Error).message ?? String(e);
+    return { req: null, outcome };
+  }
 }
 
 /** POST a signed relay request to the configured relayer; returns the tx hash. */
 export async function sendViaRelayer(req: RelayRequest): Promise<string> {
   if (!BLOB_RELAYER_URL) throw new Error('no blob relayer configured');
-  const res = await fetch(BLOB_RELAYER_URL, {
+  const base = BLOB_RELAYER_URL.replace(/\/+$/, '');
+  const res = await fetch(`${base}/execute`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(req),
   });
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
-    throw new Error(`relayer ${res.status}: ${txt.slice(0, 200)}`);
+    throw new Error(`relayer /execute ${res.status}: ${txt.slice(0, 200)}`);
   }
   const j = (await res.json()) as { txHash?: string; error?: string };
   if (j.error) throw new Error(`relayer: ${j.error}`);

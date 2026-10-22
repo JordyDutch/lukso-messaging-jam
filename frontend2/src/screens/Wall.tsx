@@ -16,6 +16,7 @@ import {
   postDmBlob,
   type WallPost,
   type RelayCtx,
+  type SignOutcome,
 } from '../lib/wall';
 import { useTransport } from '../lib/transport';
 import { convPubOf } from '../lib/registry';
@@ -78,20 +79,14 @@ export function Wall() {
   const { state, dispatch } = useApp();
   const up = state.up!;
 
-  // Relay context for the gas-less LSP25 blob lane. The relay path (relay.ts)
-  // needs the UP's CONTROLLER EOA (to read its LSP25 nonce + as the digest
-  // signer). The stock UP extension abstracts the controller away — it returns
-  // the UP address as the account and wraps signing internally — so the dApp
-  // cannot name a controller here, and `relay` stays null: blob posts go via the
-  // direct Type-3 path (and fall back to the text lane when the signer can't
-  // sign Type-3, per the probe). This is wired so a signer that DOES expose its
-  // controller (lab/headless, or a future extension API) activates the relay
-  // with zero further change. See docs/BLOB-ARCHITECTURE.md §relay.
-  const relay = useMemo<RelayCtx | null>(() => {
-    const controller = (up as { controller?: string }).controller;
-    if (!controller) return null;
-    return { up: up.address, controller };
-  }, [up]);
+  // Relay context for the gas-less LSP25 blob lane (SIGNATURE-first model, see
+  // relay.ts). The dApp never needs the controller EOA: the extension signs the
+  // LSP25 digest and the relayer recovers + validates + meters + sends the
+  // Type-3 tx. We only need the UP address here. Panes attach their own `onSign`
+  // diagnostic so the UI can show exactly what the extension did when asked to
+  // sign (the one unknown only a real browser confirms). See
+  // docs/BLOB-ARCHITECTURE.md §relay and poc/lab-ups/blob-sigrelay-spike.mjs.
+  const relay = useMemo<RelayCtx>(() => ({ up: up.address }), [up]);
 
   const [raw, setRaw] = useState<WallPost[]>([]);
   const [decoded, setDecoded] = useState<WallPost[]>([]);
@@ -304,13 +299,54 @@ function Body({ p }: { p: WallPost }) {
   return <>{p.text}</>;
 }
 
-function PublicPane({ me, up, feed, relay }: { me: string; up: ReturnType<typeof useApp>['state']['up']; feed: WallPost[]; relay: RelayCtx | null }) {
+/**
+ * SignPanel — SIGNATURE TEST readout. Shows exactly what the UP extension did
+ * when asked to sign the LSP25 relay digest: the method tried, the address it
+ * signed with, the raw signature, and who it ecrecovers to. This is the one
+ * thing only a real browser confirms (relay.ts §SIGNATURE FORMAT). A green
+ * "recovered" that equals a controller of the UP means the signature-relay
+ * architecture works end-to-end against this extension.
+ */
+function SignPanel({ outcome }: { outcome: SignOutcome | null }) {
+  if (!outcome) return null;
+  const row = (k: string, v: string) => (
+    <div style={{ display: 'flex', gap: 6, fontFamily: 'monospace', fontSize: 12, wordBreak: 'break-all' }}>
+      <span className="muted" style={{ minWidth: 92, flexShrink: 0 }}>{k}</span>
+      <span>{v}</span>
+    </div>
+  );
+  return (
+    <div
+      className="small"
+      style={{
+        marginTop: 8, padding: 10, borderRadius: 8,
+        border: `1px solid ${outcome.ok ? '#2e7d32' : '#b23'}`,
+        background: outcome.ok ? 'rgba(46,125,50,0.08)' : 'rgba(178,51,51,0.08)',
+      }}
+    >
+      <div style={{ fontWeight: 600, marginBottom: 6 }}>
+        {outcome.ok ? '✅ extension signed the LSP25 digest' : '❌ extension did not sign'}
+      </div>
+      {row('method', outcome.method)}
+      {row('signer', outcome.signer)}
+      {row('keyManager', outcome.keyManager)}
+      {row('nonce', outcome.nonce)}
+      {row('digest', outcome.digest)}
+      {outcome.signature && row('signature', outcome.signature)}
+      {outcome.recovered && row('recovered', outcome.recovered)}
+      {outcome.error && row('note', outcome.error)}
+    </div>
+  );
+}
+
+function PublicPane({ me, up, feed, relay }: { me: string; up: ReturnType<typeof useApp>['state']['up']; feed: WallPost[]; relay: RelayCtx }) {
   const [text, setText] = useState('');
   const [tagInput, setTagInput] = useState('');
   const [hits, setHits] = useState<ProfileHit[]>([]);
   const [tag, setTag] = useState<{ label: string; address: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [sig, setSig] = useState<SignOutcome | null>(null);
   const deb = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { transport } = useTransport();
 
@@ -336,9 +372,10 @@ function PublicPane({ me, up, feed, relay }: { me: string; up: ReturnType<typeof
   async function send() {
     setBusy(true);
     setErr(null);
+    setSig(null);
     try {
       if (transport === 'blob') {
-        await postPublicBlob(up!.signer, text.trim(), tag?.address ?? null, relay);
+        await postPublicBlob(up!.signer, text.trim(), tag?.address ?? null, { ...relay, onSign: setSig });
       } else {
         await postPublic(up!.signer, text.trim(), tag?.address ?? null);
       }
@@ -386,6 +423,7 @@ function PublicPane({ me, up, feed, relay }: { me: string; up: ReturnType<typeof
           {busy ? 'Posting…' : 'Post publicly'}
         </button>
         {err && <p className="error">{err}</p>}
+        <SignPanel outcome={sig} />
       </div>
 
       <ul className="posts">
@@ -603,17 +641,19 @@ function DmPane({
   allPosts: WallPost[];
   meAnnounced: boolean;
   peerAnnounced: boolean;
-  relay: RelayCtx | null;
+  relay: RelayCtx;
 }) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [sig, setSig] = useState<SignOutcome | null>(null);
   const ready = meAnnounced && peerAnnounced;
   const { transport } = useTransport();
 
   async function send() {
     setBusy(true);
     setErr(null);
+    setSig(null);
     try {
       const dmArgs = {
         signer: up!.signer,
@@ -622,7 +662,7 @@ function DmPane({
         peerAddr: peer.address,
         text: text.trim(),
       };
-      if (transport === 'blob') await postDmBlob({ ...dmArgs, relay });
+      if (transport === 'blob') await postDmBlob({ ...dmArgs, relay: { ...relay, onSign: setSig } });
       else await postDm(dmArgs);
       setText('');
     } catch (e) {
@@ -681,6 +721,7 @@ function DmPane({
           {busy ? 'Sealing & posting…' : '🔒 Send encrypted'}
         </button>
         {err && <p className="error">{err}</p>}
+        <SignPanel outcome={sig} />
       </div>
     </>
   );
