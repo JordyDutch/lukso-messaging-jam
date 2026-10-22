@@ -23,7 +23,7 @@ export function Connect() {
 
   return (
     <div className="card center">
-      <h1>UP Wall</h1>
+      <h1>🌭 UP Dawg</h1>
       <p className="muted">
         A shared wall for Universal Profiles. Post in the clear and tag someone —
         that's public, like a wall post. Or open an encrypted DM with a peer who

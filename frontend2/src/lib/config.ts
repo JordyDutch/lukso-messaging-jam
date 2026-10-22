@@ -75,13 +75,19 @@ export const ENVIO_GRAPHQL =
 export const EXPLORER = 'https://explorer.lukso.network';
 
 /**
- * Wall contract — LIVE on LUKSO mainnet (deployed 2026-10-21).
- * Stores public plaintext posts and encrypted DM ciphertext fully on-chain.
+ * Wall contract — WallV2, LIVE on LUKSO mainnet (deployed 2026-10-22).
+ * Stores public plaintext posts and encrypted DM ciphertext on-chain via the
+ * `Posted` event (the frontend reads from logs, not state). v2 dropped the
+ * redundant `bodyOf` storage mapping (~73% gas cut) and added forward-compatible
+ * `postBlob` EIP-4844 hash-anchor hooks (client blob lane not shipped yet — see
+ * docs/BLOB-ARCHITECTURE.md). The `Posted` event signature is unchanged from v1,
+ * so WALL_ABI/read+write of text posts is identical.
+ * v1 (retired): 0xd3a767c7fE981524810aF7bdE05FA6537B96f58E.
  * Override via VITE_WALL_ADDRESS for a different deploy.
  */
 export const WALL_ADDRESS: string =
   (import.meta.env?.VITE_WALL_ADDRESS as string | undefined) ??
-  '0xd3a767c7fE981524810aF7bdE05FA6537B96f58E';
+  '0x480f1913A546E99e34B313ab7c9dDFc294aF2c07';
 
 /** Known lab peers you can DM out of the box. */
 export const KNOWN_PEERS: { name: string; address: string }[] = [

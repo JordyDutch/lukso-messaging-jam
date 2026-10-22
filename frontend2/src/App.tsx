@@ -11,7 +11,7 @@ export default function App() {
       {state.screen === 'announce' && <Announce />}
       {state.screen === 'wall' && <Wall />}
       <footer className="foot hint">
-        UP Wall · public posts + encrypted DMs · fully on-chain (LUKSO mainnet 42)
+        UP Dawg · public posts + encrypted DMs · fully on-chain (LUKSO mainnet 42)
       </footer>
     </main>
   );
