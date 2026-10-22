@@ -46,12 +46,18 @@ export async function labelOf(address: string): Promise<string> {
 // `limit`) and `limit` is NOT a top-level field arg either — the old names made
 // every query fail GRAPHQL_VALIDATION, so names never resolved and the UI fell
 // back to hashes everywhere. Verified against live introspection 2026-10-22.
+// NOTE: on `search_profiles_v2` the result type is `search_profiles_result`,
+// which has NO top-level `profileImages` — that lives under the nested `profile`
+// relation (`profile { profileImages }`). Querying it at the top level fails
+// GRAPHQL_VALIDATION ("Did you mean profile?"), which threw in resolveName and
+// made profile SEARCH return nothing (names still resolved because nameOf's
+// BY_ID query never asked for images). Verified against live schema 2026-10-22.
 const QUERY = `
   query Search($q: String!) {
     search_profiles_v2(args: { search_query: $q, limit_count: 8 }) {
       id
       name
-      profileImages(limit: 1) { url }
+      profile { profileImages(limit: 1) { url } }
     }
   }
 `;
@@ -59,7 +65,7 @@ const QUERY = `
 interface EnvioRow {
   id: string;
   name: string | null;
-  profileImages?: { url: string | null }[];
+  profile?: { profileImages?: { url: string | null }[] } | null;
 }
 
 const BY_ID = `
@@ -132,6 +138,6 @@ export async function resolveName(input: string): Promise<ProfileHit[]> {
     .map((r) => ({
       address: ethers.getAddress(r.id),
       name: r.name,
-      avatar: r.profileImages?.[0]?.url ?? null,
+      avatar: r.profile?.profileImages?.[0]?.url ?? null,
     }));
 }
