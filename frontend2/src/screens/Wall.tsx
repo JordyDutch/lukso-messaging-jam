@@ -136,19 +136,20 @@ export function Wall() {
   // so reading it fresh inside the effect is safe. (Blank-wall fix 2026-10-22.)
   const convPriv = up.convPriv;
   useEffect(() => {
-    let live = true;
+    // Do NOT cancel an in-flight decode on cleanup. A new `raw` (e.g. the user's
+    // own just-posted blob arriving mid-decode) would otherwise abort the pass
+    // before setDecoded, and since a full feed decode outlasts the poll interval
+    // the feed could stay empty. decodePosts caches recovered bodies by id, so a
+    // superseded pass is cheap and any pass runs to completion. Apply by
+    // last-write-wins on size: posts are append-only, so a result is never
+    // "stale" in a way that should shrink the feed — only ever grow it.
     decodePosts(raw, { addr: up.address, convPriv })
       .then((d) => {
         const pub = d.filter((x) => !x.encrypted).length;
-        console.info(
-          `[wall-read] decodePosts DONE: ${d.length} decoded, ${pub} public, live=${live}`,
-        );
-        if (live) setDecoded(d);
+        console.info(`[wall-read] decodePosts DONE: ${d.length} decoded, ${pub} public`);
+        setDecoded((prev) => (d.length >= prev.length ? d : prev));
       })
       .catch((e) => console.error('[wall-read] decodePosts THREW:', e));
-    return () => {
-      live = false;
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [raw, up.address]);
 

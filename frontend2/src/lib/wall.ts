@@ -316,6 +316,13 @@ export async function postDmBlob(args: {
   return sendBlobPost(args.signer, args.peerAddr, true, threadId, body, args.relay);
 }
 
+// Recovered blob bodies, cached by post id for the session. A blob's body is
+// immutable (its id and anchored hash never change), so once recovered we never
+// need to refetch it — this makes a re-run of decodePosts near-instant for
+// already-seen posts and keeps a mid-flight restart from redoing every beacon
+// fetch. Value is the decoded payload, or `null` once confirmed pruned/missing.
+const blobBodyCache = new Map<number, Uint8Array | null>();
+
 /** Decode a batch of posts for display from my vantage point. */
 export async function decodePosts(
   posts: WallPost[],
@@ -351,18 +358,32 @@ export async function decodePosts(
         out.push({ ...p, pruned: true });
         continue;
       }
-      const got = await fetchBlobBody(readProvider, p.txHash, p.blobHash);
-      if (!got.ok || !got.payload) {
-        // Diagnostic: a blob that can't be recovered renders as "expired". Log
-        // WHY (pruned vs. a fetch/CORS/cert error) so a blank wall is debuggable
-        // — an `error` reason means the beacon fetch itself failed in-browser,
-        // NOT that the body is genuinely gone.
-        console.warn(`[wall-read] id=${p.id} blob body unavailable:`, got.reason, got.error ?? '');
-        out.push({ ...p, pruned: got.reason === 'pruned' || got.reason === 'mismatch' });
+      // Use the cached body if we already recovered (or confirmed-gone) this id.
+      let payload: Uint8Array | null;
+      if (blobBodyCache.has(p.id)) {
+        payload = blobBodyCache.get(p.id)!;
+      } else {
+        const got = await fetchBlobBody(readProvider, p.txHash, p.blobHash);
+        if (!got.ok || !got.payload) {
+          // A blob that can't be recovered renders as "expired". Log WHY (pruned
+          // vs. a fetch/CORS/cert error) so a blank wall stays debuggable — an
+          // `error` reason means the beacon fetch itself failed in-browser, NOT
+          // that the body is genuinely gone. Cache a definitive pruned/mismatch
+          // as null; do NOT cache a transient 'error' (let it retry next pass).
+          console.warn(`[wall-read] id=${p.id} blob body unavailable:`, got.reason, got.error ?? '');
+          if (got.reason === 'pruned' || got.reason === 'mismatch') blobBodyCache.set(p.id, null);
+          out.push({ ...p, pruned: got.reason === 'pruned' || got.reason === 'mismatch' });
+          continue;
+        }
+        payload = got.payload;
+        blobBodyCache.set(p.id, payload);
+        console.info(`[wall-read] id=${p.id} blob body recovered (${payload.length}B)`);
+      }
+      if (!payload) {
+        out.push({ ...p, pruned: true });
         continue;
       }
-      console.info(`[wall-read] id=${p.id} blob body recovered (${got.payload.length}B)`);
-      p = { ...p, bodyRaw: ethers.hexlify(got.payload) };
+      p = { ...p, bodyRaw: ethers.hexlify(payload) };
 
       // Author resolution (Option B): a relayed blob post is on-chain `from` the
       // relayer, with the real author proven in `meta`. Now that the body is
@@ -381,7 +402,7 @@ export async function decodePosts(
             encrypted: p.encrypted,
             threadId: p.threadId,
             blobHash: p.blobHash,
-            len: got.payload.length,
+            len: payload.length,
             nonce: am.nonce,
           });
           const recovered = ethers.verifyMessage(message, am.sig);
