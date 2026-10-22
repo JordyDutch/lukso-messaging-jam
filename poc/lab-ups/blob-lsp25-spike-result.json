@@ -1,0 +1,16 @@
+{
+  "network": "lukso-mainnet",
+  "approach": "LSP25 executeRelayCall carries Type-3 blob; UP.execute → postBlob",
+  "txHash": "0x4b62520046b86ba586fcbe8895c0edafc10d7cd503560519134490987098600d",
+  "block": 8627089,
+  "gasUsed": "148351",
+  "postedBlobFrom": "0xA02B2b0cB13a87824B0e42C951de3B1a20ECbA5C",
+  "authorUp": "0xA02B2b0cB13a87824B0e42C951de3B1a20ECbA5C",
+  "fromIsUp": true,
+  "blobHash": "0x015033dce41fd1d51d9acb5e52f468d509bc860aab7486c8e4b0f9683500069e",
+  "hashMatchedAtDepth": true,
+  "bodyRecovered": true,
+  "relayer": "0x80B890Cd922925d0D74c99c9FaC3f17a66640135",
+  "contractChangeNeeded": false,
+  "verdict": "PASS"
+}
