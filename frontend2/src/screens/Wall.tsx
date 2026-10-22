@@ -176,8 +176,9 @@ export function Wall() {
 
   const meLc = up.address.toLowerCase();
 
+  // Public feed, ordered NEWEST → OLDEST (highest id first) for display.
   const publicFeed = useMemo(() => {
-    const f = decoded.filter((p) => !p.encrypted);
+    const f = decoded.filter((p) => !p.encrypted).sort((a, b) => b.id - a.id);
     console.info(`[wall-read] publicFeed render: decoded=${decoded.length} public=${f.length}`);
     return f;
   }, [decoded]);
@@ -472,7 +473,7 @@ function PublicPane({ me, up, feed, relay }: { me: string; up: ReturnType<typeof
 
       <ul className="posts">
         {feed.length === 0 && <li className="muted empty">No public posts yet. Be the first.</li>}
-        {[...feed].reverse().map((p) => (
+        {feed.map((p) => (
           <li key={p.id} className={p.from.toLowerCase() === me ? 'post mine' : 'post'}>
             <div className="posthead">
               <Who address={p.from} />
@@ -513,7 +514,7 @@ function MentionsPane({ me, feed }: { me: string; feed: WallPost[] }) {
         {feed.length === 0 && (
           <li className="muted empty">No one has mentioned you yet. When a public post @tags your UP, it shows up here.</li>
         )}
-        {[...feed].reverse().map((p) => (
+        {feed.map((p) => (
           <li key={p.id} className={p.from.toLowerCase() === me ? 'post mine' : 'post'}>
             <div className="posthead">
               <Who address={p.from} />
